@@ -135,6 +135,7 @@ kubearbiter/
 | `helm.sh/helm/v3` | 发布回滚（仅 SDK 的 release 操作） | M5 |
 | `github.com/google/uuid` | 主键与幂等键 | M1 |
 | `stretchr/testify`（仅测试） | 断言 | M1 |
+| `Python 3.13`（离线分析工具，非服务运行时依赖） | E1–E7 原始样本的统计与置信区间（`scripts/analysis/`，仅标准库） | M1 |
 | `k6`（外部二进制，非 Go 依赖） | 压测 | M2 |
 
 **禁止引入**：任何 ORM（gorm/ent）、任何 Scheduler Framework 相关包、Istio SDK、eBPF 库、Loki 客户端、消息队列（Kafka/RabbitMQ/Redis 亦不引入，任务队列用 PG）。

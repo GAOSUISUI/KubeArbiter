@@ -1,0 +1,44 @@
+# 版本锁（M1 回填）
+
+- 回填日期：2026-11-22
+- 规则（`docs/00-freeze.md` §4）：只记录实测输出，不凭记忆填写；未安装项标为"待安装"，不得预填版本。
+- 校验环境：Windows 11，本机 shell（部分命令需完整路径，因当前 shell 的 PATH 未刷新）。
+
+## 1. 已安装组件
+
+| 组件 | 实际版本 | 安装日期 | 校验命令与实测输出 |
+|---|---|---|---|
+| Go | go1.27.4 windows/amd64 | 2026-11-22（M0 已装） | `go version` → `go version go1.27.4 windows/amd64` |
+| Git | 2.56.1.windows.1 | 2026-11-22（M0 已装） | `git --version` → `git version 2.56.1.windows.1` |
+| gcc (mingw-w64) | 16.2.0 (UCRT, posix-seh, Brecht Sanders r3) | 2026-11-22（M0 已装） | `gcc --version` → `gcc.exe (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r3) 16.2.0` |
+| kubectl | v1.37.2（Kustomize v5.8.1） | 2026-11-22 | `kubectl version --client` → `Client Version: v1.37.2` |
+| Helm | v3.20.0（go1.25.6，GitTreeState=clean） | 2026-11-22 | `helm version` → `version.BuildInfo{Version:"v3.20.0", ...}` |
+| Python | 3.13.17 | 2026-11-22 | `python --version` → `Python 3.13.17` |
+
+> Helm 说明：winget 默认装到 v4.3.2，与冻结包"Helm 3.x 稳定版"冲突，已卸载并改装 v3.20.0。
+> kubectl/helm 二进制位于 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\...`，当前 shell 的 PATH 需重开后才生效。
+> Python 说明：安装到 `%LOCALAPPDATA%\Programs\Python\Python313\`，仅用于 `scripts/analysis/` 离线统计，不参与服务构建与部署。
+
+## 2. Go 模块（实际解析版本）
+
+| 模块 | 版本 | 校验命令 |
+|---|---|---|
+| `github.com/gin-gonic/gin` | v1.10.1 | `go list -m github.com/gin-gonic/gin` |
+| `github.com/google/uuid` | v1.6.0 | `go list -m github.com/google/uuid` |
+| `k8s.io/client-go` | v0.37.2 | `go list -m k8s.io/client-go` |
+| `k8s.io/api` | v0.37.2 | `go list -m k8s.io/api` |
+| `k8s.io/apimachinery` | v0.37.2 | `go list -m k8s.io/apimachinery` |
+
+> gin 说明：最新 v1.12.0 会引入 `quic-go`、`mongo-driver/v2` 等间接依赖，超出依赖白名单的意图，故锁 v1.10.1。
+> client-go 说明：与 kubectl v1.37.2 同 minor（v0.37.2），满足冻结包"偏差不超过 ±1"。
+> `go.mod` 的 `go` 指令随依赖要求升到 **1.26.0**（gin 阶段 1.25.0，client-go 阶段 1.26.0），本机工具链 go1.27.4 可正常构建与 `-race` 测试。
+
+## 3. 待安装 / 待回填
+
+| 组件 | 计划版本 | 阻塞原因 |
+|---|---|---|
+| Docker Desktop | 当前稳定版 | 用户本轮选择暂不安装；PostgreSQL 16 容器化依赖它 |
+| PostgreSQL 16 | 16.x 镜像 digest | 等待 Docker |
+| Kubernetes 集群（kubeadm） | 与 kubectl 同 minor（1.37.x） | 待创建 3 节点 VM 集群后回填 `kubectl version` |
+| ingress-nginx | 与集群兼容的稳定版 | M2 前回填 `helm list -n ingress-nginx` |
+| Node.js LTS | LTS | M5 前回填 |
