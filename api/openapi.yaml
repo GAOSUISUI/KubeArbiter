@@ -1,0 +1,2128 @@
+openapi: 3.0.3
+
+info:
+  title: KubeArbiter API
+  version: 0.1.0
+  description: |
+    KubeArbiter —— 基于 Kubernetes 的多租户容量仲裁与 SLO 保障平台。
+
+    **本文件是唯一契约来源。** 后端路由、请求/响应 DTO、前端 TypeScript 类型均由本文件生成或校验，
+    禁止手写第二份。枚举取值与 `docs/01-algorithm-spec.md` 第 7 节、`db/schema.sql` 的 CHECK 约束逐字一致。
+
+    ## 统一约定
+    - 成功：`{ "code": 0, "data": ..., "trace_id": "..." }`
+    - 失败：`{ "code": 40001, "message": "...", "details": [...], "trace_id": "..." }`
+    - 列表：`?cursor=&limit=`，返回 `next_cursor`，不使用 offset 分页
+    - 所有写请求支持 `Idempotency-Key` 头；同键同体返回原结果，同键异体返回 `40901`
+    - 认证：Bearer JWT；权限在路由级与对象级双重校验
+
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+
+tags:
+  - name: auth
+  - name: capacity
+  - name: tenants
+  - name: placement
+  - name: policies
+  - name: arbitration
+  - name: slo
+  - name: scaling
+  - name: releases
+  - name: incidents
+  - name: tasks
+  - name: audit
+  - name: system
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- auth
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 换取 JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- capacity
+  /api/v1/capacity/overview:
+    get:
+      tags: [capacity]
+      summary: 集群容量总览
+      description: 包含节点汇总、租户占比、SLO 总体状态。任一项取不到数据时该字段为 null，前端显示"无数据"而不是 0。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CapacityOverview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/capacity/nodes:
+    get:
+      tags: [capacity]
+      summary: 节点容量明细
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/NodeCapacity'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/capacity/tenants:
+    get:
+      tags: [capacity]
+      summary: 租户容量明细
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TenantCapacityPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- tenants
+  /api/v1/tenants:
+    get:
+      tags: [tenants]
+      summary: 租户列表
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TenantPage'
+    post:
+      tags: [tenants]
+      summary: 创建租户
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/tenants/{id}/quota:
+    put:
+      tags: [tenants]
+      summary: 更新租户配额
+      description: 修改 hard / fair_share / min_share / max_share 之一或多个；必须整体满足 min ≤ max ≤ hard。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuotaUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Quota'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  # ---------------------------------------------------------------- placement
+  /api/v1/placement/simulate:
+    post:
+      tags: [placement]
+      summary: 放置模拟（不写集群）
+      description: |
+        对齐算法规范第 2 节。返回每个候选节点的总分与七维分解，以及每个被淘汰节点的原因码与证据。
+        决策落 `placement_decisions`，`snapshot_hash` 由服务端生成并返回，供复现。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlacementSimulateRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PlacementDecision'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/placement/decisions:
+    get:
+      tags: [placement]
+      summary: 决策历史
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: tenant_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: policy_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PlacementDecisionPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/placement/decisions/{id}:
+    get:
+      tags: [placement]
+      summary: 决策详情（含完整 evidence）
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PlacementDecision'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/placement/apply:
+    post:
+      tags: [placement]
+      summary: 按决策落地（创建任务，默认进入待审批）
+      description: |
+        必须携带 `decision_id`，服务端校验其 `snapshot_hash` 与当前快照差异；
+        差异超过阈值时返回 `42201`（决策已过期），需重新模拟。
+        实际执行由 `arbiter-worker` 通过 Webhook 注入 + dry-run 完成。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlacementApplyRequest'
+      responses:
+        '200':
+          description: 已创建任务
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  # ---------------------------------------------------------------- policies
+  /api/v1/policies:
+    get:
+      tags: [policies]
+      summary: 策略列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Policy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [policies]
+      summary: 新建策略
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  /api/v1/policies/{id}:
+    put:
+      tags: [policies]
+      summary: 更新策略权重
+      description: 权重必须全部 ≥ 0 且总和为 1（误差 ≤ 1e-6），否则 42201。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  # ---------------------------------------------------------------- arbitration
+  /api/v1/arbitration/plan:
+    post:
+      tags: [arbitration]
+      summary: 生成仲裁方案
+      description: 对齐算法规范第 3 节。同一请求体在 `dry_run=true` 时不得写库。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArbitrationRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArbitrationPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/arbitration/preemption-preview:
+    post:
+      tags: [arbitration]
+      summary: 抢占代价预览（只读）
+      description: 只返回候选与代价分解，绝不驱逐。单副本服务不作为候选，原因码 `SINGLE_REPLICA_EXCLUDED`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreemptionPreviewRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PreemptionPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- slo
+  /api/v1/slo:
+    get:
+      tags: [slo]
+      summary: 全部服务的 SLO 状态
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SLOStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/slo/{service}:
+    get:
+      tags: [slo]
+      summary: 单服务 SLO 明细（含多窗口燃尽率）
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SLODetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/slo/{service}/budget:
+    get:
+      tags: [slo]
+      summary: 错误预算余量
+      description: 数据完整度 < 0.95 时 `degraded=true`，且 `publishing_allowed` 必须为 false。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: { type: string }
+        - name: window
+          in: query
+          description: 预算窗口，默认取 slo_definitions 配置
+          schema:
+            type: string
+            enum: [1h, 6h, 3d, 30d]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/BudgetStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------------------------------------------------------------- scaling
+  /api/v1/scaling/recommendations:
+    get:
+      tags: [scaling]
+      summary: 容量建议列表
+      parameters:
+        - name: service
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ScalingRecommendationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/scaling/recommendations/{id}/apply:
+    post:
+      tags: [scaling]
+      summary: 采纳容量建议（创建 SCALE 任务）
+      description: `confidence=UNUSABLE` 的建议不可采纳，返回 42201。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  # ---------------------------------------------------------------- releases
+  /api/v1/releases:
+    get:
+      tags: [releases]
+      summary: 发布列表
+      parameters:
+        - name: state
+          in: query
+          schema:
+            $ref: '#/components/schemas/ReleaseState'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReleasePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [releases]
+      summary: 创建发布（进入 PENDING）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseCreate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  /api/v1/releases/{id}/promote:
+    post:
+      tags: [releases]
+      summary: 推进到下一灰度档位
+      description: |
+        前置条件：当前 `verdict` 为 PROCEED 或阶段已完成分析；错误预算余量 < 0.20 时禁止推进到 100%。
+        非法状态跃迁返回 40902。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoteRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Release'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StateConflict'
+        '422':
+          $ref: '#/components/responses/BusinessRejected'
+
+  /api/v1/releases/{id}/abort:
+    post:
+      tags: [releases]
+      summary: 中止并回滚
+      description: 依次执行：灰度权重归零 → Helm 回退 from_rev → 观察 3 分钟 → 写证据。任一步失败置 FAILED。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbortRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Release'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StateConflict'
+
+  # ---------------------------------------------------------------- incidents
+  /api/v1/incidents:
+    get:
+      tags: [incidents]
+      summary: 事件列表
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [OPEN, RESOLVED] }
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/IncidentType'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/IncidentPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/incidents/{id}:
+    get:
+      tags: [incidents]
+      summary: 事件详情（含诊断报告与恢复动作）
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/IncidentDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/diagnosis/run:
+    post:
+      tags: [incidents]
+      summary: 触发一次应用级诊断
+      description: 输出必须严格分离 `facts` 与 `inferences`；不得仅凭 Pod 状态断言根因。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiagnosisRunRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DiagnosisReport'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ---------------------------------------------------------------- tasks
+  /api/v1/tasks:
+    get:
+      tags: [tasks]
+      summary: 任务列表
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskStatus'
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TaskType'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TaskPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/tasks/{id}:
+    get:
+      tags: [tasks]
+      summary: 任务详情（含日志）
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TaskDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/tasks/{id}/cancel:
+    post:
+      tags: [tasks]
+      summary: 取消任务
+      description: 仅 PENDING / PENDING_APPROVAL / QUEUED 可取消，其余返回 40902。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StateConflict'
+
+  /api/v1/tasks/{id}/approve:
+    post:
+      tags: [tasks]
+      summary: 审批通过
+      description: 只允许 PENDING_APPROVAL → QUEUED；并发审批返回 40903。审批人与创建人不得相同（admin 除外）。
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StateConflict'
+
+  # ---------------------------------------------------------------- audit
+  /api/v1/audit-logs:
+    get:
+      tags: [audit]
+      summary: 审计日志（只读）
+      parameters:
+        - name: object_type
+          in: query
+          schema: { type: string }
+        - name: object_id
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuditLogPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users:
+    get:
+      tags: [audit]
+      summary: 用户列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/roles:
+    get:
+      tags: [audit]
+      summary: 角色列表
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ---------------------------------------------------------------- system
+  /healthz:
+    get:
+      tags: [system]
+      summary: 存活探针
+      security: []
+      responses:
+        '200':
+          description: OK
+        '503':
+          description: 依赖不可用
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      description: 上一页返回的 next_cursor，原样回传
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 同键同体返回原结果；同键异体返回 40901
+      schema: { type: string, maxLength: 128 }
+
+  responses:
+    BadRequest:
+      description: 参数校验失败（40001）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: 未认证（40101）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: 无权限（40301）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: 资源不存在（40401）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: 幂等键冲突（40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StateConflict:
+      description: 状态机非法跃迁（40902）或并发冲突（40903）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BusinessRejected:
+      description: 业务规则拒绝（42201）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: 依赖不可用（50301）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+
+    # ------------------------------------------------ 通用
+    Envelope:
+      type: object
+      required: [code, data, trace_id]
+      properties:
+        code:
+          type: integer
+          example: 0
+        data: {}
+        trace_id:
+          type: string
+
+    Error:
+      type: object
+      required: [code, message, trace_id]
+      properties:
+        code:
+          type: integer
+          enum: [40001, 40101, 40301, 40401, 40901, 40902, 40903, 42201, 42901, 50001, 50301]
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/ErrorDetail'
+        trace_id:
+          type: string
+
+    ErrorDetail:
+      type: object
+      properties:
+        field:
+          type: string
+        reason:
+          type: string
+
+    PageMeta:
+      type: object
+      required: [next_cursor]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+
+    TokenResponse:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    # ------------------------------------------------ 枚举
+    PolicyStrategy:
+      type: string
+      enum: [BALANCED, BIN_PACK, FAIR_SHARE, LOAD_AWARE]
+
+    Allocator:
+      type: string
+      enum: [FIFO, HARD_QUOTA, DRF]
+
+    SliType:
+      type: string
+      enum: [AVAILABILITY, LATENCY]
+
+    ReleaseState:
+      type: string
+      enum: [PENDING, VALIDATING, CANARY, ANALYZING, PROMOTING, COMPLETED, ROLLING_BACK, ROLLED_BACK, FAILED]
+
+    Verdict:
+      type: string
+      enum: [PROCEED, ROLLBACK, HOLD, INSUFFICIENT_DATA]
+
+    TaskStatus:
+      type: string
+      enum: [PENDING, PENDING_APPROVAL, QUEUED, RUNNING, RETRYING, SUCCEEDED, FAILED, CANCELLED]
+
+    TaskType:
+      type: string
+      enum: [PLACEMENT_APPLY, PREEMPT, SCALE, RELEASE_PROMOTE, RELEASE_ABORT, RECOVERY, CONFIG_ROLLBACK]
+
+    IncidentType:
+      type: string
+      enum: [CRASH_LOOP, IMAGE_PULL_BACKOFF, READINESS_FAIL, OOM_KILLED, DOWNSTREAM_TIMEOUT, EMPTY_ENDPOINTS, CONFIG_ERROR]
+
+    Severity:
+      type: string
+      enum: [INFO, WARN, CRITICAL]
+
+    DiagnosisConfidence:
+      type: string
+      enum: [HIGH, MEDIUM, LOW]
+
+    CapacityConfidence:
+      type: string
+      enum: [HIGH, MEDIUM, LOW, UNUSABLE]
+
+    PlacementStatus:
+      type: string
+      enum: [OK, NO_CANDIDATE]
+
+    ReasonCode:
+      type: string
+      enum:
+        - NODE_NOT_READY
+        - NODE_UNSCHEDULABLE
+        - INSUFFICIENT_CPU
+        - INSUFFICIENT_MEMORY
+        - TAINT_NOT_TOLERATED
+        - NODE_SELECTOR_MISMATCH
+        - AFFINITY_MISMATCH
+        - TOPOLOGY_VIOLATION
+        - HOSTPORT_CONFLICT
+        - TENANT_QUOTA_EXCEEDED
+        - NO_NODE_IN_SNAPSHOT
+
+    WarningCode:
+      type: string
+      enum:
+        - METRICS_STALE
+        - METRICS_MISSING
+        - FAIR_SHARE_MISSING
+        - EXTRAPOLATION
+        - INVALID_CURVE
+        - INSUFFICIENT_POINTS
+        - BUDGET_LOW
+        - SLO_DATA_DEGRADED
+        - SINGLE_REPLICA_EXCLUDED
+
+    # ------------------------------------------------ 租户与配额
+    Tenant:
+      type: object
+      required: [id, name, weight]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        weight: { type: number, minimum: 0, exclusiveMinimum: true }
+        created_at: { type: string, format: date-time }
+
+    TenantInput:
+      type: object
+      required: [name, weight]
+      properties:
+        name: { type: string, maxLength: 63 }
+        weight: { type: number, minimum: 0, exclusiveMinimum: true }
+
+    TenantPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Tenant'
+
+    Quota:
+      type: object
+      required: [tenant_id, resource, hard, fair_share, min_share]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        resource: { type: string, enum: [cpu, memory] }
+        hard:
+          type: integer
+          description: cpu 为 millicore，memory 为 byte
+        fair_share:
+          type: number
+          minimum: 0
+          maximum: 1
+        min_share: { type: integer, minimum: 0 }
+        max_share:
+          type: integer
+          nullable: true
+
+    QuotaUpdate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Quota'
+
+    # ------------------------------------------------ 容量
+    NodeCapacity:
+      type: object
+      required: [name, ready, schedulable, allocatable, requested]
+      properties:
+        name: { type: string }
+        ready: { type: boolean }
+        schedulable: { type: boolean }
+        zone: { type: string, nullable: true }
+        allocatable:
+          $ref: '#/components/schemas/ResourcePair'
+        requested:
+          $ref: '#/components/schemas/ResourcePair'
+        used:
+          allOf:
+            - $ref: '#/components/schemas/ResourcePair'
+          nullable: true
+          description: 指标不可用时为 null
+        pod_count: { type: integer }
+        host_ports:
+          type: array
+          items: { type: integer }
+
+    ResourcePair:
+      type: object
+      required: [cpu_milli, mem_bytes]
+      properties:
+        cpu_milli: { type: integer, format: int64 }
+        mem_bytes: { type: integer, format: int64 }
+
+    TenantCapacity:
+      type: object
+      required: [tenant_id, name, requested, hard, jain_share]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        requested:
+          $ref: '#/components/schemas/ResourcePair'
+        hard:
+          $ref: '#/components/schemas/ResourcePair'
+        fair_share:
+          type: number
+        jain_share:
+          type: number
+          description: 主导份额 max_r(x_ir / C_r)
+        over_quota_minutes_7d: { type: integer }
+
+    TenantCapacityPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/TenantCapacity'
+
+    CapacityOverview:
+      type: object
+      required: [as_of, nodes]
+      properties:
+        as_of: { type: string, format: date-time }
+        nodes:
+          $ref: '#/components/schemas/CapacityTotals'
+        tenant_count: { type: integer }
+        jain_index:
+          type: number
+          nullable: true
+        slo_summary:
+          type: object
+          nullable: true
+          properties:
+            services_total: { type: integer }
+            services_ok: { type: integer }
+            services_at_risk: { type: integer }
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarningCode'
+
+    CapacityTotals:
+      type: object
+      required: [count, allocatable, requested]
+      properties:
+        count: { type: integer }
+        allocatable:
+          $ref: '#/components/schemas/ResourcePair'
+        requested:
+          $ref: '#/components/schemas/ResourcePair'
+        used:
+          allOf:
+            - $ref: '#/components/schemas/ResourcePair'
+          nullable: true
+
+    # ------------------------------------------------ 策略
+    PlacementWeights:
+      type: object
+      description: 七维权重，全部 ≥ 0 且总和为 1（±1e-6）
+      required: [s_cpu, s_mem, s_balance, s_pack, s_load, s_fair, s_frag]
+      properties:
+        s_cpu: { type: number, minimum: 0, maximum: 1 }
+        s_mem: { type: number, minimum: 0, maximum: 1 }
+        s_balance: { type: number, minimum: 0, maximum: 1 }
+        s_pack: { type: number, minimum: 0, maximum: 1 }
+        s_load: { type: number, minimum: 0, maximum: 1 }
+        s_fair: { type: number, minimum: 0, maximum: 1 }
+        s_frag: { type: number, minimum: 0, maximum: 1 }
+
+    Policy:
+      type: object
+      required: [id, name, strategy, weights]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        strategy:
+          $ref: '#/components/schemas/PolicyStrategy'
+        weights:
+          $ref: '#/components/schemas/PlacementWeights'
+        is_default: { type: boolean }
+
+    PolicyInput:
+      type: object
+      required: [name, strategy, weights]
+      properties:
+        name: { type: string, maxLength: 63 }
+        strategy:
+          $ref: '#/components/schemas/PolicyStrategy'
+        weights:
+          $ref: '#/components/schemas/PlacementWeights'
+
+    # ------------------------------------------------ 放置
+    WorkloadSpec:
+      type: object
+      required: [name, namespace, requests, replicas]
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        kind:
+          type: string
+          enum: [Deployment, StatefulSet, DaemonSet]
+          default: Deployment
+        replicas: { type: integer, minimum: 1 }
+        requests:
+          $ref: '#/components/schemas/ResourcePair'
+        node_selector:
+          type: object
+          additionalProperties: { type: string }
+        tolerations:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              operator: { type: string }
+              value: { type: string }
+              effect: { type: string }
+        topology_spread:
+          type: object
+          nullable: true
+          properties:
+            topology_key: { type: string }
+            max_skew: { type: integer }
+        host_ports:
+          type: array
+          items: { type: integer }
+
+    PlacementSimulateRequest:
+      type: object
+      required: [workload, policy_id]
+      properties:
+        workload:
+          $ref: '#/components/schemas/WorkloadSpec'
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+        policy_id:
+          type: string
+          format: uuid
+
+    NodeScore:
+      type: object
+      required: [node, rank, score, breakdown]
+      properties:
+        node: { type: string }
+        rank: { type: integer }
+        score: { type: number, minimum: 0, maximum: 100 }
+        breakdown:
+          type: object
+          additionalProperties: { type: number }
+
+    FilteredNode:
+      type: object
+      required: [node, reason]
+      properties:
+        node: { type: string }
+        reason:
+          $ref: '#/components/schemas/ReasonCode'
+        evidence:
+          type: object
+          additionalProperties: true
+
+    PlacementDecision:
+      type: object
+      required: [id, status, policy_id, snapshot_hash, scores, filtered, degraded, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          $ref: '#/components/schemas/PlacementStatus'
+        workload:
+          $ref: '#/components/schemas/WorkloadSpec'
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+        policy_id: { type: string, format: uuid }
+        chosen_node:
+          type: string
+          nullable: true
+        snapshot_hash: { type: string }
+        scores:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeScore'
+        filtered:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilteredNode'
+        degraded: { type: boolean }
+        warnings:
+          type: array
+          items:
+            $ref: '#/components/schemas/WarningCode'
+        evidence:
+          type: object
+          additionalProperties: true
+        created_at: { type: string, format: date-time }
+
+    PlacementDecisionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/PlacementDecision'
+
+    PlacementApplyRequest:
+      type: object
+      required: [decision_id]
+      properties:
+        decision_id: { type: string, format: uuid }
+        allow_auto_execute:
+          type: boolean
+          default: false
+          description: 仅当目标带 arbiter.io/test=true 时可置 true 跳过审批
+
+    # ------------------------------------------------ 仲裁
+    ArbitrationRequest:
+      type: object
+      required: [allocator, tenants]
+      properties:
+        allocator:
+          $ref: '#/components/schemas/Allocator'
+        tenants:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [tenant_id, demand]
+            properties:
+              tenant_id: { type: string, format: uuid }
+              weight: { type: number, minimum: 0, exclusiveMinimum: true }
+              demand:
+                $ref: '#/components/schemas/ResourcePair'
+              min_share:
+                $ref: '#/components/schemas/ResourcePair'
+              max_share:
+                $ref: '#/components/schemas/ResourcePair'
+        dry_run:
+          type: boolean
+          default: true
+
+    TenantAllocation:
+      type: object
+      required: [tenant_id, allocated, dominant_share]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        allocated:
+          $ref: '#/components/schemas/ResourcePair'
+        dominant_share: { type: number }
+
+    ArbitrationPlan:
+      type: object
+      required: [id, allocator, allocations, jain_index, cpu_jain, mem_jain, utilization, infeasible]
+      properties:
+        id: { type: string, format: uuid }
+        allocator:
+          $ref: '#/components/schemas/Allocator'
+        allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/TenantAllocation'
+        jain_index: { type: number, minimum: 0, maximum: 1 }
+        cpu_jain: { type: number, minimum: 0, maximum: 1 }
+        mem_jain: { type: number, minimum: 0, maximum: 1 }
+        utilization: { type: number }
+        infeasible: { type: boolean }
+        shortfall:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              tenant_id: { type: string, format: uuid }
+              cpu_milli: { type: integer }
+              mem_bytes: { type: integer }
+        preemption:
+          $ref: '#/components/schemas/PreemptionPreview'
+
+    PreemptionPreviewRequest:
+      type: object
+      required: [tenant_id, demand]
+      properties:
+        tenant_id: { type: string, format: uuid }
+        demand:
+          $ref: '#/components/schemas/ResourcePair'
+
+    PreemptionCandidate:
+      type: object
+      required: [pod, namespace, cost, breakdown]
+      properties:
+        pod: { type: string }
+        namespace: { type: string }
+        workload: { type: string }
+        cost: { type: number }
+        breakdown:
+          type: object
+          required: [priority_weight, runtime_credit, redundancy_factor]
+          properties:
+            priority_weight: { type: number }
+            runtime_credit: { type: number }
+            redundancy_factor: { type: number }
+        releasable:
+          $ref: '#/components/schemas/ResourcePair'
+
+    PreemptionPreview:
+      type: object
+      required: [candidates, excluded, total_release]
+      properties:
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreemptionCandidate'
+        excluded:
+          type: array
+          items:
+            type: object
+            properties:
+              pod: { type: string }
+              reason:
+                $ref: '#/components/schemas/WarningCode'
+        total_release:
+          $ref: '#/components/schemas/ResourcePair'
+        affected_workloads:
+          type: array
+          items: { type: string }
+
+    # ------------------------------------------------ SLO
+    SLOStatus:
+      type: object
+      required: [service, sli_type, target, current, budget_remaining]
+      properties:
+        service: { type: string }
+        sli_type:
+          $ref: '#/components/schemas/SliType'
+        target: { type: number }
+        current: { type: number }
+        budget_remaining: { type: number }
+        publishing_allowed: { type: boolean }
+        degraded: { type: boolean }
+
+    BurnRateWindow:
+      type: object
+      required: [long_window, short_window, threshold, burn_rate, firing]
+      properties:
+        long_window: { type: string, example: 1h }
+        short_window: { type: string, example: 5m }
+        threshold: { type: number }
+        burn_rate: { type: number }
+        firing: { type: boolean }
+        completeness: { type: number, minimum: 0, maximum: 1 }
+
+    SLODetail:
+      type: object
+      required: [service, sli_type, target, windows]
+      properties:
+        service: { type: string }
+        sli_type:
+          $ref: '#/components/schemas/SliType'
+        target: { type: number }
+        latency_threshold_ms:
+          type: integer
+          nullable: true
+        windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/BurnRateWindow'
+        degraded: { type: boolean }
+
+    BudgetStatus:
+      type: object
+      required: [service, window, budget_total, budget_consumed, budget_remaining, publishing_allowed]
+      properties:
+        service: { type: string }
+        window: { type: string }
+        budget_total: { type: number }
+        budget_consumed: { type: number }
+        budget_remaining:
+          type: number
+          description: 允许为负值，表示已透支，不得截断为 0
+        publishing_allowed: { type: boolean }
+        degraded: { type: boolean }
+        completeness: { type: number }
+
+    # ------------------------------------------------ 容量建议
+    CurvePoint:
+      type: object
+      required: [concurrency, p99_ms]
+      properties:
+        concurrency: { type: integer }
+        p99_ms: { type: number }
+
+    ScalingRecommendation:
+      type: object
+      required: [id, service, replicas_current, confidence, curve, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        service: { type: string }
+        predicted_p99_ms:
+          type: number
+          nullable: true
+        current_p99_ms:
+          type: number
+          nullable: true
+        mape:
+          type: number
+          nullable: true
+        replicas_current: { type: integer }
+        replicas_suggested:
+          type: integer
+          nullable: true
+        confidence:
+          $ref: '#/components/schemas/CapacityConfidence'
+        note:
+          type: string
+          nullable: true
+        curve:
+          type: array
+          items:
+            $ref: '#/components/schemas/CurvePoint'
+        created_at: { type: string, format: date-time }
+
+    ScalingRecommendationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ScalingRecommendation'
+
+    # ------------------------------------------------ 发布
+    Release:
+      type: object
+      required: [id, app, namespace, from_rev, to_rev, state, started_at]
+      properties:
+        id: { type: string, format: uuid }
+        app: { type: string }
+        namespace: { type: string }
+        from_rev: { type: integer }
+        to_rev: { type: integer }
+        state:
+          $ref: '#/components/schemas/ReleaseState'
+        traffic_mode:
+          type: string
+          enum: [HTTP_CANARY, REPLICA_RATIO]
+        current_weight:
+          type: integer
+          minimum: 0
+          maximum: 100
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReleaseStep'
+        started_at: { type: string, format: date-time }
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ReleaseStep:
+      type: object
+      required: [step, weight, verdict, samples]
+      properties:
+        step: { type: integer }
+        weight: { type: integer }
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+        samples: { type: integer }
+        evidence:
+          type: object
+          additionalProperties: true
+        started_at: { type: string, format: date-time }
+
+    ReleaseCreate:
+      type: object
+      required: [app, namespace, from_rev, to_rev]
+      properties:
+        app: { type: string }
+        namespace: { type: string }
+        from_rev: { type: integer, minimum: 1 }
+        to_rev: { type: integer, minimum: 1 }
+        traffic_mode:
+          type: string
+          enum: [HTTP_CANARY, REPLICA_RATIO]
+          default: HTTP_CANARY
+
+    PromoteRequest:
+      type: object
+      properties:
+        target_weight:
+          type: integer
+          enum: [5, 25, 50, 100]
+
+    AbortRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, maxLength: 512 }
+
+    ReleasePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Release'
+
+    # ------------------------------------------------ 事件与诊断
+    Incident:
+      type: object
+      required: [id, target, namespace, type, severity, status, first_seen]
+      properties:
+        id: { type: string, format: uuid }
+        target: { type: string }
+        namespace: { type: string }
+        type:
+          $ref: '#/components/schemas/IncidentType'
+        severity:
+          $ref: '#/components/schemas/Severity'
+        status: { type: string, enum: [OPEN, RESOLVED] }
+        first_seen: { type: string, format: date-time }
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    IncidentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Incident'
+
+    Fact:
+      type: object
+      required: [stage, at, summary]
+      properties:
+        stage:
+          type: string
+          enum: [OBSERVED, CORRELATED]
+        at: { type: string, format: date-time }
+        object: { type: string }
+        summary: { type: string }
+        values:
+          type: object
+          additionalProperties: true
+
+    Inference:
+      type: object
+      required: [root_cause, confidence, evidence]
+      properties:
+        root_cause: { type: string }
+        confidence:
+          $ref: '#/components/schemas/DiagnosisConfidence'
+        evidence:
+          type: array
+          items: { type: string }
+        counter_evidence:
+          type: array
+          items: { type: string }
+
+    DiagnosisReport:
+      type: object
+      required: [id, incident_id, facts, inferences, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        incident_id: { type: string, format: uuid }
+        facts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
+        inferences:
+          type: array
+          items:
+            $ref: '#/components/schemas/Inference'
+        created_at: { type: string, format: date-time }
+
+    RecoveryAction:
+      type: object
+      required: [id, action, result]
+      properties:
+        id: { type: string, format: uuid }
+        action: { type: string }
+        task_id:
+          type: string
+          format: uuid
+          nullable: true
+        approved_by:
+          type: string
+          nullable: true
+        result:
+          type: string
+          enum: [PENDING, SUCCEEDED, FAILED, SKIPPED]
+        created_at: { type: string, format: date-time }
+
+    IncidentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Incident'
+        - type: object
+          properties:
+            diagnosis:
+              allOf:
+                - $ref: '#/components/schemas/DiagnosisReport'
+              nullable: true
+            recovery_actions:
+              type: array
+              items:
+                $ref: '#/components/schemas/RecoveryAction'
+
+    DiagnosisRunRequest:
+      type: object
+      required: [target, namespace]
+      properties:
+        target: { type: string }
+        namespace: { type: string }
+        incident_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    # ------------------------------------------------ 任务
+    Task:
+      type: object
+      required: [id, type, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          $ref: '#/components/schemas/TaskType'
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        params:
+          type: object
+          additionalProperties: true
+        retry_count: { type: integer }
+        max_retries: { type: integer }
+        error:
+          type: string
+          nullable: true
+        error_code:
+          type: integer
+          nullable: true
+        created_by: { type: string }
+        approved_by:
+          type: string
+          nullable: true
+        created_at: { type: string, format: date-time }
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    TaskLog:
+      type: object
+      required: [ts, level, message]
+      properties:
+        ts: { type: string, format: date-time }
+        level:
+          type: string
+          enum: [DEBUG, INFO, WARN, ERROR]
+        message: { type: string }
+
+    TaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/Task'
+        - type: object
+          properties:
+            logs:
+              type: array
+              items:
+                $ref: '#/components/schemas/TaskLog'
+
+    TaskPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Task'
+
+    # ------------------------------------------------ 审计与权限
+    AuditLog:
+      type: object
+      required: [id, actor, action, object_type, ts]
+      properties:
+        id: { type: integer, format: int64 }
+        actor: { type: string }
+        action: { type: string }
+        object_type: { type: string }
+        object_id:
+          type: string
+          nullable: true
+        before:
+          type: object
+          nullable: true
+          additionalProperties: true
+        after:
+          type: object
+          nullable: true
+          additionalProperties: true
+        trace_id:
+          type: string
+          nullable: true
+        ts: { type: string, format: date-time }
+
+    AuditLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditLog'
+
+    User:
+      type: object
+      required: [id, username, status]
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+
+    Role:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        permissions:
+          type: array
+          items: { type: string }

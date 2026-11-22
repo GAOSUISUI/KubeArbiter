@@ -1,0 +1,27 @@
+# 构建产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# 本地配置
+.env
+.env.local
+
+# 前端
+web/node_modules/
+web/dist/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 虚拟机与快照（应放在仓库外）
+*.vmx
+*.vmdk
+*.nvram
+
+# 临时
+.screenshots/
+*.log
