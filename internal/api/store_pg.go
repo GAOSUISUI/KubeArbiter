@@ -43,8 +43,40 @@ var (
 	_ DecisionReader = (*PGStore)(nil)
 	_ DecisionWriter = (*PGStore)(nil)
 	_ TenantReader   = (*PGStore)(nil)
+	_ TenantLister   = (*PGStore)(nil)
 	_ SnapshotWriter = (*PGStore)(nil)
 )
+
+// ListTenants 返回全部租户及硬配额，按名称排序。
+func (s *PGStore) ListTenants(ctx context.Context) ([]TenantInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.id::text, t.name, t.weight::float8, coalesce(qc.fair_share, 0)::float8,
+		       coalesce(qc.hard, 0), coalesce(qm.hard, 0)
+		FROM tenants t
+		LEFT JOIN quotas qc ON qc.tenant_id = t.id AND qc.resource = 'cpu'
+		LEFT JOIN quotas qm ON qm.tenant_id = t.id AND qm.resource = 'memory'
+		ORDER BY t.name, t.id`)
+	if err != nil {
+		return nil, fmt.Errorf("查询租户列表: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]TenantInfo, 0, 8)
+	for rows.Next() {
+		var (
+			t                TenantInfo
+			cpuHard, memHard int64
+		)
+		if err := rows.Scan(&t.ID, &t.Name, &t.Weight, &t.FairShare, &cpuHard, &memHard); err != nil {
+			return nil, fmt.Errorf("扫描租户: %w", err)
+		}
+		if cpuHard > 0 || memHard > 0 {
+			t.Quota = schedcore.Resources{CPUMilli: cpuHard, MemBytes: memHard}
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
 
 // snapshotDoc 是 capacity_snapshots.payload 的形状，与 db/schema.sql 的版本约束一致。
 type snapshotDoc struct {

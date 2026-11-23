@@ -102,6 +102,21 @@ type SnapshotWriter interface {
 	SaveSnapshot(ctx context.Context, snap capacity.Snapshot, hash string) error
 }
 
+// TenantInfo 是租户元数据（名称、权重、配额、配置的公平份额），
+// 用量与主导份额在 handler 里结合快照计算。
+type TenantInfo struct {
+	ID        string
+	Name      string
+	Weight    float64
+	FairShare float64
+	Quota     schedcore.Resources
+}
+
+// TenantLister 列出全部租户，供容量明细接口使用。
+type TenantLister interface {
+	ListTenants(ctx context.Context) ([]TenantInfo, error)
+}
+
 // MemoryStore 是只读视图的占位实现：没有数据库时不编造数据，默认返回空列表。
 type MemoryStore struct {
 	mu        sync.RWMutex
@@ -151,6 +166,16 @@ func (s *MemoryStore) GetTenant(_ context.Context, id string) (schedcore.TenantS
 	defer s.mu.RUnlock()
 	t, ok := s.tenants[id]
 	return t, ok, nil
+}
+
+func (s *MemoryStore) ListTenants(_ context.Context) ([]TenantInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]TenantInfo, 0, len(s.tenants))
+	for _, t := range s.tenants {
+		out = append(out, TenantInfo{ID: t.ID, Name: t.ID, Weight: t.Weight, FairShare: t.FairShare, Quota: t.Quota})
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) AddDecision(d PlacementDecision) {

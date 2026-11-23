@@ -41,12 +41,38 @@ func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantSta
 	if tenants == nil {
 		tenants = map[string]schedcore.TenantState{}
 	}
+	// 快照里出现但调用方没提供的租户（例如别的租户正在占用资源）按权重 1 补入，
+	// 否则权重总和偏小会把目标租户的公平份额算高。
+	states := make(map[string]schedcore.TenantState, len(tenants)+len(snap.TenantUsage))
+	for id, ts := range tenants {
+		states[id] = ts
+	}
+	for id := range snap.TenantUsage {
+		if _, ok := states[id]; !ok {
+			states[id] = schedcore.TenantState{ID: id, Weight: 1}
+		}
+	}
+
+	// 已用量来自快照聚合；权重份额按 Σweight 归一化，得到本轮公平份额。
+	var totalWeight float64
+	for _, ts := range states {
+		totalWeight += ts.Weight
+	}
+	for id, ts := range states {
+		if ts.Allocated.IsZero() {
+			ts.Allocated = snap.TenantUsage[id]
+		}
+		if ts.FairShare <= 0 && totalWeight > 0 {
+			ts.FairShare = ts.Weight / totalWeight
+		}
+		states[id] = ts
+	}
 
 	return schedcore.ClusterContext{
 		Nodes:             nodes,
 		Capacity:          capacitySum,
 		MinPendingPod:     minPendingRequest(snap.PendingPods),
-		Tenants:           tenants,
+		Tenants:           states,
 		TopologyCounts:    topologyCounts,
 		MetricsKnown:      false,
 		MetricsAgeSeconds: 0,

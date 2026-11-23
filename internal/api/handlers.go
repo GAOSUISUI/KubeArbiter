@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,8 @@ type Deps struct {
 	Writer    DecisionWriter
 	// Tenants 提供租户权重与配额；未接入库时为空，模拟接口按权重 1、无配额兜底。
 	Tenants TenantReader
+	// TenantCatalog 列出全部租户，供容量明细接口使用；为空时该接口返回 503。
+	TenantCatalog TenantLister
 	// Snapshots 把决策所用快照留档；为空时跳过留档。
 	Snapshots SnapshotWriter
 	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
@@ -61,6 +64,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	v1.GET("/policies", listPolicies(d))
+	v1.GET("/capacity/tenants", listTenantCapacity(d))
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
 	v1.POST("/placement/simulate", simulatePlacement(d))
@@ -391,4 +395,110 @@ func degraded(warnings []schedcore.WarningCode) bool {
 		}
 	}
 	return false
+}
+
+// tenantCapacityItem 对应 openapi.yaml 的 TenantCapacity。
+type tenantCapacityItem struct {
+	TenantID  string              `json:"tenant_id"`
+	Name      string              `json:"name"`
+	Requested schedcore.Resources `json:"requested"`
+	Hard      schedcore.Resources `json:"hard"`
+	FairShare float64             `json:"fair_share"`
+	JainShare float64             `json:"jain_share"`
+}
+
+type tenantCapacityPage struct {
+	NextCursor *string              `json:"next_cursor"`
+	Items      []tenantCapacityItem `json:"items"`
+}
+
+// listTenantCapacity 把「快照里的真实用量」和「库里的租户配额」合成租户容量明细。
+// 未打 arbiter.io/tenant 标签的命名空间不归属任何租户，因此这里只出现已登记的租户。
+func listTenantCapacity(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		if d.Snapshotter == nil || d.TenantCatalog == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		limit, err := parseLimit(c.Query("limit"))
+		if err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "limit", Reason: err.Error()}))
+			return
+		}
+
+		snap, err := d.Snapshotter(ctx)
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		tenants, err := d.TenantCatalog.ListTenants(ctx)
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+
+		totalCapacity := clusterCapacity(snap)
+		var totalWeight float64
+		for _, t := range tenants {
+			if t.Weight > 0 {
+				totalWeight += t.Weight
+			}
+		}
+
+		items := make([]tenantCapacityItem, 0, len(tenants))
+		for _, t := range tenants {
+			usage := snap.TenantUsage[t.ID]
+			// 优先用租户配置的公平份额；未配置时按权重在全部租户间归一化。
+			share := t.FairShare
+			if share <= 0 && totalWeight > 0 && t.Weight > 0 {
+				share = t.Weight / totalWeight
+			}
+			items = append(items, tenantCapacityItem{
+				TenantID:  t.ID,
+				Name:      t.Name,
+				Requested: usage,
+				Hard:      t.Quota,
+				FairShare: share,
+				JainShare: dominantShare(usage, totalCapacity),
+			})
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].Name != items[j].Name {
+				return items[i].Name < items[j].Name
+			}
+			return items[i].TenantID < items[j].TenantID
+		})
+		if len(items) > limit {
+			items = items[:limit]
+		}
+		writeOK(c, tenantCapacityPage{Items: items})
+	}
+}
+
+// clusterCapacity 是所有可调度节点的可分配资源之和，与决策核使用的口径一致。
+func clusterCapacity(snap capacity.Snapshot) schedcore.Resources {
+	var sum schedcore.Resources
+	for _, n := range snap.Nodes {
+		if n.Ready && !n.Unschedulable {
+			sum = sum.Add(n.Allocatable)
+		}
+	}
+	return sum
+}
+
+// dominantShare 是租户在 CPU / 内存两维上的最大占用比例，对应契约里的 jain_share。
+func dominantShare(used, cap schedcore.Resources) float64 {
+	var share float64
+	if cap.CPUMilli > 0 {
+		if r := float64(used.CPUMilli) / float64(cap.CPUMilli); r > share {
+			share = r
+		}
+	}
+	if cap.MemBytes > 0 {
+		if r := float64(used.MemBytes) / float64(cap.MemBytes); r > share {
+			share = r
+		}
+	}
+	return share
 }

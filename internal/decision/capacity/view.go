@@ -18,11 +18,12 @@ import (
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
-// View 是 Node/Pod 两类 informer 的封装。所有读取都走本地缓存，不直接打 API Server。
+// View 是 Node/Pod/Namespace 三类 informer 的封装。所有读取都走本地缓存，不直接打 API Server。
 type View struct {
-	factory informers.SharedInformerFactory
-	nodes   coreinformers.NodeInformer
-	pods    coreinformers.PodInformer
+	factory    informers.SharedInformerFactory
+	nodes      coreinformers.NodeInformer
+	pods       coreinformers.PodInformer
+	namespaces coreinformers.NamespaceInformer
 }
 
 // NodeView 是单个节点的画像。Requested 为该节点上所有非终态 Pod 的 request 之和。
@@ -56,20 +57,25 @@ type Snapshot struct {
 	TakenAt     time.Time
 	Nodes       []NodeView
 	PendingPods []PodView
+	// TenantUsage 是按命名空间标签 arbiter.io/tenant 聚合出的已调度资源用量（含目标租户之外的所有租户）。
+	TenantUsage map[string]schedcore.Resources
 }
 
 func NewView(client kubernetes.Interface, resync time.Duration) *View {
 	factory := informers.NewSharedInformerFactory(client, resync)
 	nodes := factory.Core().V1().Nodes()
 	pods := factory.Core().V1().Pods()
+	namespaces := factory.Core().V1().Namespaces()
 	// 生成式 informer 是惰性的：不先调用一次 Informer() 注册，factory.Start 不会启动它，
 	// WaitForCacheSync 也会直接返回空结果。
 	_ = nodes.Informer()
 	_ = pods.Informer()
+	_ = namespaces.Informer()
 	return &View{
-		factory: factory,
-		nodes:   nodes,
-		pods:    pods,
+		factory:    factory,
+		nodes:      nodes,
+		pods:       pods,
+		namespaces: namespaces,
 	}
 }
 
@@ -85,8 +91,11 @@ func (v *View) Run(ctx context.Context) error {
 }
 
 func (v *View) HasSynced() bool {
-	return v.nodes.Informer().HasSynced() && v.pods.Informer().HasSynced()
+	return v.nodes.Informer().HasSynced() && v.pods.Informer().HasSynced() && v.namespaces.Informer().HasSynced()
 }
+
+// TenantLabelKey 把命名空间归属到租户；未打标签的命名空间不参与租户用量统计。
+const TenantLabelKey = "arbiter.io/tenant"
 
 // Snapshot 从本地缓存构造一致性快照。所有字段均为副本，调用方修改不会影响缓存。
 func (v *View) Snapshot(now time.Time) (Snapshot, error) {
@@ -98,12 +107,24 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("列出 Pod: %w", err)
 	}
+	namespaces, err := v.namespaces.Lister().List(labels.Everything())
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("列出命名空间: %w", err)
+	}
+
+	tenantByNS := make(map[string]string, len(namespaces))
+	for _, ns := range namespaces {
+		if tenant := ns.Labels[TenantLabelKey]; tenant != "" {
+			tenantByNS[ns.Name] = tenant
+		}
+	}
 
 	byName := make(map[string]*NodeView, len(nodes))
 	out := Snapshot{
 		TakenAt:     now,
 		Nodes:       make([]NodeView, 0, len(nodes)),
 		PendingPods: make([]PodView, 0),
+		TenantUsage: make(map[string]schedcore.Resources),
 	}
 
 	for _, node := range nodes {
@@ -145,6 +166,10 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 		}
 		nv.Requested = nv.Requested.Add(pv.Requests)
 		nv.PodCount++
+		// 已调度 Pod 按所属命名空间的租户标签累计用量；未归属租户的资源不计入公平性。
+		if tenant := tenantByNS[pod.Namespace]; tenant != "" {
+			out.TenantUsage[tenant] = out.TenantUsage[tenant].Add(pv.Requests)
+		}
 		for _, port := range pv.HostPorts {
 			if _, taken := nv.HostPorts[port]; !taken {
 				nv.HostPorts[port] = pod.Namespace + "/" + pod.Name

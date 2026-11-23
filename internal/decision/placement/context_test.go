@@ -88,4 +88,35 @@ func TestBuildContextKeepsTenants(t *testing.T) {
 	if ctx.Tenants["t1"].Weight != 2 {
 		t.Fatalf("租户状态应原样透传，实际 %+v", ctx.Tenants)
 	}
+	if ctx.Tenants["t1"].FairShare != 0.4 {
+		t.Fatalf("显式给出的公平份额不应被覆盖，实际 %v", ctx.Tenants["t1"].FairShare)
+	}
+}
+
+func TestBuildContextFillsAllocatedAndFairShare(t *testing.T) {
+	snap := capacity.Snapshot{
+		TenantUsage: map[string]schedcore.Resources{
+			"t-a": {CPUMilli: 500, MemBytes: 1 << 30},
+			"t-b": {CPUMilli: 100, MemBytes: 1 << 29},
+		},
+	}
+	// 只显式提供 t-a；t-b 需要从用量里补出来，否则权重总和偏小。
+	ctx := BuildContext(snap, map[string]schedcore.TenantState{
+		"t-a": {ID: "t-a", Weight: 3},
+	})
+
+	a := ctx.Tenants["t-a"]
+	if a.Allocated.CPUMilli != 500 {
+		t.Fatalf("t-a 已用量应来自快照，实际 %+v", a.Allocated)
+	}
+	if a.FairShare != 0.75 {
+		t.Fatalf("t-a 公平份额应为 0.75，实际 %v", a.FairShare)
+	}
+	b, ok := ctx.Tenants["t-b"]
+	if !ok {
+		t.Fatal("快照中出现的租户应自动补入，权重默认 1")
+	}
+	if b.Allocated.CPUMilli != 100 || b.FairShare != 0.25 {
+		t.Fatalf("t-b 应补出用量与份额，实际 %+v", b)
+	}
 }

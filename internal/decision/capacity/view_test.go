@@ -221,6 +221,38 @@ func TestPodRequestsPerDimensionMax(t *testing.T) {
 	}
 }
 
+func TestSnapshotAggregatesTenantUsage(t *testing.T) {
+	named := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{TenantLabelKey: "t-a"}},
+	}
+	plain := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-plain"}}
+
+	v := newTestView(t,
+		testNode("ka-w1"),
+		named,
+		plain,
+		testPod("team-a", "api-1", "ka-w1", corev1.PodRunning, testContainer("c", "500m", "1Gi")),
+		testPod("team-a", "api-2", "ka-w1", corev1.PodRunning, testContainer("c", "250m", "512Mi")),
+		// 未归属租户的命名空间不计入任何租户。
+		testPod("team-plain", "job-1", "ka-w1", corev1.PodRunning, testContainer("c", "1", "2Gi")),
+	)
+
+	snap, err := v.Snapshot(time.Now())
+	if err != nil {
+		t.Fatalf("快照失败: %v", err)
+	}
+	got, ok := snap.TenantUsage["t-a"]
+	if !ok {
+		t.Fatalf("应聚合出 t-a 的用量，实际 %+v", snap.TenantUsage)
+	}
+	if got.CPUMilli != 750 || got.MemBytes != 1536<<20 {
+		t.Fatalf("t-a 用量应为 750m/1.5Gi，实际 %d/%d", got.CPUMilli, got.MemBytes)
+	}
+	if len(snap.TenantUsage) != 1 {
+		t.Fatalf("只有打了租户标签的命名空间才计入，实际 %+v", snap.TenantUsage)
+	}
+}
+
 func TestSnapshotOrdersDeterministically(t *testing.T) {
 	v := newTestView(t,
 		testNode("n2"), testNode("n1"),
