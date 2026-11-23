@@ -333,6 +333,68 @@ func decodeWeights(raw []byte) (schedcore.Weights, error) {
 	return doc.Weights, nil
 }
 
+func encodeWeights(w schedcore.Weights) ([]byte, error) {
+	// 与 decode 对称：schema_version 固定为 1，CHECK 约束要求必须存在。
+	return json.Marshal(struct {
+		SchemaVersion int `json:"schema_version"`
+		schedcore.Weights
+	}{SchemaVersion: 1, Weights: w})
+}
+
+func (s *PGStore) CreatePolicy(ctx context.Context, p Policy) (Policy, error) {
+	raw, err := encodeWeights(p.Weights)
+	if err != nil {
+		return Policy{}, fmt.Errorf("编码策略权重: %w", err)
+	}
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO policies (id, name, strategy, weights, is_default)
+		VALUES ($1, $2, $3, $4::jsonb, $5)
+		ON CONFLICT DO NOTHING`,
+		p.ID, p.Name, string(p.Strategy), raw, p.IsDefault)
+	if err != nil {
+		return Policy{}, fmt.Errorf("写入策略: %w", err)
+	}
+	return p, nil
+}
+
+func (s *PGStore) UpdatePolicy(ctx context.Context, p Policy) (Policy, error) {
+	if _, err := uuid.Parse(p.ID); err != nil {
+		return Policy{}, ErrNotFound
+	}
+	raw, err := encodeWeights(p.Weights)
+	if err != nil {
+		return Policy{}, fmt.Errorf("编码策略权重: %w", err)
+	}
+	ct, err := s.pool.Exec(ctx, `
+		UPDATE policies SET name=$2, strategy=$3, weights=$4::jsonb, is_default=$5, updated_at=now()
+		WHERE id=$1`,
+		p.ID, p.Name, string(p.Strategy), raw, p.IsDefault)
+	if err != nil {
+		return Policy{}, fmt.Errorf("更新策略: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return Policy{}, ErrNotFound
+	}
+	return p, nil
+}
+
+func (s *PGStore) DeletePolicy(ctx context.Context, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return ErrNotFound
+	}
+	ct, err := s.pool.Exec(ctx, `DELETE FROM policies WHERE id=$1`, id)
+	if err != nil {
+		return fmt.Errorf("删除策略: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func nullableUUID(s string) any {
 	if s == "" {
 		return nil

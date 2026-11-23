@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -11,6 +12,9 @@ import (
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
+
+// ErrNotFound 表示存储层未找到目标记录，handler 应转成 404。
+var ErrNotFound = errors.New("record not found")
 
 // Policy 对应 openapi.yaml 的 Policy。策略权重直接复用 schedcore.Weights，
 // 避免 API 层与决策核各定义一份七维权重后悄悄漂移。
@@ -80,6 +84,13 @@ type DecisionFilter struct {
 type PolicyReader interface {
 	ListPolicies(ctx context.Context) ([]Policy, error)
 	GetPolicy(ctx context.Context, id string) (Policy, bool, error)
+}
+
+// PolicyWriter 提供策略 CRUD。前端策略管理页和 simulate 的"保存当前权重"按钮会用到。
+type PolicyWriter interface {
+	CreatePolicy(ctx context.Context, p Policy) (Policy, error)
+	UpdatePolicy(ctx context.Context, p Policy) (Policy, error)
+	DeletePolicy(ctx context.Context, id string) error
 }
 
 type DecisionReader interface {
@@ -248,4 +259,38 @@ func (s *MemoryStore) CreateDecision(_ context.Context, d PlacementDecision) (Pl
 	defer s.mu.Unlock()
 	s.decisions = append(s.decisions, d)
 	return d, nil
+}
+
+func (s *MemoryStore) CreatePolicy(_ context.Context, p Policy) (Policy, error) {
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policies = append(s.policies, p)
+	return p, nil
+}
+
+func (s *MemoryStore) UpdatePolicy(_ context.Context, p Policy) (Policy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, cur := range s.policies {
+		if cur.ID == p.ID {
+			s.policies[i] = p
+			return p, nil
+		}
+	}
+	return Policy{}, ErrNotFound
+}
+
+func (s *MemoryStore) DeletePolicy(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, cur := range s.policies {
+		if cur.ID == id {
+			s.policies = append(s.policies[:i], s.policies[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
 }

@@ -62,7 +62,8 @@ func main() {
 		} else {
 			defer pool.Close()
 			pg := api.NewPGStore(pool)
-			deps.Policies, deps.Decisions, deps.Writer = pg, pg, pg
+			deps.Policies, deps.PolicyWriter = pg, pg
+			deps.Decisions, deps.Writer = pg, pg
 			deps.Tenants, deps.Snapshots, deps.TenantCatalog = pg, pg, pg
 			if deps.Checks == nil {
 				deps.Checks = map[string]func(context.Context) error{}

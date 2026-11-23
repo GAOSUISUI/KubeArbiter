@@ -133,6 +133,18 @@ const (
 	LoadAware Strategy = "LOAD_AWARE"
 )
 
+// Validate 校验策略值是否属于四种预置枚举之一。
+func (s Strategy) Validate() error {
+	switch s {
+	case Balanced, BinPack, FairShare, LoadAware:
+		return nil
+	case "":
+		return errors.New("必须非空")
+	default:
+		return fmt.Errorf("非法策略值 %q（允许 BALANCED/BIN_PACK/FAIR_SHARE/LOAD_AWARE）", s)
+	}
+}
+
 // Weights 为七维权重。全部为 0 时视为非法。
 type Weights struct {
 	CPU     float64 `json:"s_cpu"`

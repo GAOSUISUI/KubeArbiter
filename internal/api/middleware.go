@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -8,6 +9,23 @@ import (
 )
 
 const traceIDHeader = "X-Trace-Id"
+
+// CORS 允许任意 Origin（localhost 下的临时前端、未来的独立部署前端）读取 API 响应。
+// 方法只开放实际用到的 GET/POST/OPTIONS；未来正式前端上线时再缩窄到具体域名。
+func CORS() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.Writer.Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, "+traceIDHeader)
+		h.Set("Access-Control-Expose-Headers", traceIDHeader)
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
 
 // TraceID 为每个请求确定 trace_id：优先复用上游传入的合法值，否则生成 UUIDv4。
 // 同时写回响应头，便于网关或前端把日志串起来。

@@ -12,6 +12,9 @@
 # 前端
 web/node_modules/
 web/dist/
+# 前端构建产物（内嵌进 Go 二进制），仅保留占位文件
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
 
 # 编辑器
 .vscode/

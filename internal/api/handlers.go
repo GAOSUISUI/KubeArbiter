@@ -25,9 +25,10 @@ const (
 
 // Deps 是 API 层的依赖集合，由 cmd/arbiter-api 注入。
 type Deps struct {
-	Policies  PolicyReader
-	Decisions DecisionReader
-	Writer    DecisionWriter
+	Policies    PolicyReader
+	PolicyWriter PolicyWriter
+	Decisions   DecisionReader
+	Writer      DecisionWriter
 	// Tenants 提供租户权重与配额；未接入库时为空，模拟接口按权重 1、无配额兜底。
 	Tenants TenantReader
 	// TenantCatalog 列出全部租户，供容量明细接口使用；为空时该接口返回 503。
@@ -61,13 +62,17 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	r := gin.New()
-	r.Use(TraceID(), Recover())
+	r.Use(CORS(), TraceID(), Recover())
 
 	r.GET("/healthz", healthz(d))
 
 	v1 := r.Group("/api/v1")
 	v1.GET("/policies", listPolicies(d))
+	v1.POST("/policies", createPolicy(d))
+	v1.PUT("/policies/:id", updatePolicy(d))
+	v1.DELETE("/policies/:id", deletePolicy(d))
 	v1.GET("/capacity/overview", capacityOverview(d))
+	v1.GET("/capacity/nodes", nodeList(d))
 	v1.GET("/capacity/tenants", listTenantCapacity(d))
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
@@ -76,9 +81,8 @@ func NewRouter(d Deps) *gin.Engine {
 	// 准入 webhook 正式路径走独立端口的 TLS 服务，这里同二进制内也注册一份，便于本地调试与单测。
 	r.POST("/webhook/mutate-pods", webhookMutate(d))
 
-	r.NoRoute(func(c *gin.Context) {
-		writeError(c, errNotFound())
-	})
+	// 未命中 API 的请求交给内嵌前端（SPA 回退）；未构建前端时返回 JSON 404。
+	registerUIRoutes(r, d)
 	return r
 }
 
@@ -114,6 +118,110 @@ func listPolicies(d Deps) gin.HandlerFunc {
 			policies = []Policy{}
 		}
 		writeOK(c, policies)
+	}
+}
+
+// createPolicy / updatePolicy / deletePolicy 实现策略 CRUD。
+// 权重必须走 Validate()；ErrNotFound 映射 404，其它存储错误映射 503。
+type policyRequest struct {
+	Name      string             `json:"name"`
+	Strategy  schedcore.Strategy `json:"strategy"`
+	Weights   schedcore.Weights  `json:"weights"`
+	IsDefault bool               `json:"is_default"`
+}
+
+func createPolicy(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.PolicyWriter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		var req policyRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "body", Reason: err.Error()}))
+			return
+		}
+		if req.Name == "" {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "name", Reason: "必须非空"}))
+			return
+		}
+		if err := req.Weights.Validate(); err != nil {
+			writeError(c, errBusinessRejected("POLICY_WEIGHTS_INVALID", ErrorDetail{Field: "weights", Reason: err.Error()}))
+			return
+		}
+		if err := req.Strategy.Validate(); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "strategy", Reason: err.Error()}))
+			return
+		}
+		p, err := d.PolicyWriter.CreatePolicy(c.Request.Context(), Policy{
+			Name:      req.Name,
+			Strategy:  req.Strategy,
+			Weights:   req.Weights,
+			IsDefault: req.IsDefault,
+		})
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(c, errNotFound())
+				return
+			}
+			writeError(c, errUnavailable())
+			return
+		}
+		writeOK(c, p)
+	}
+}
+
+func updatePolicy(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.PolicyWriter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		id := c.Param("id")
+		var req policyRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "body", Reason: err.Error()}))
+			return
+		}
+		if err := req.Weights.Validate(); err != nil {
+			writeError(c, errBusinessRejected("POLICY_WEIGHTS_INVALID", ErrorDetail{Field: "weights", Reason: err.Error()}))
+			return
+		}
+		p, err := d.PolicyWriter.UpdatePolicy(c.Request.Context(), Policy{
+			ID:        id,
+			Name:      req.Name,
+			Strategy:  req.Strategy,
+			Weights:   req.Weights,
+			IsDefault: req.IsDefault,
+		})
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(c, errNotFound())
+				return
+			}
+			writeError(c, errUnavailable())
+			return
+		}
+		writeOK(c, p)
+	}
+}
+
+func deletePolicy(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.PolicyWriter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		id := c.Param("id")
+		if err := d.PolicyWriter.DeletePolicy(c.Request.Context(), id); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(c, errNotFound())
+				return
+			}
+			writeError(c, errUnavailable())
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
 }
 
@@ -223,10 +331,12 @@ func decodeCursor(raw string) (string, bool) {
 }
 
 // simulateRequest 对应 openapi.yaml 的 PlacementSimulateRequest。
+// Weights 可选：传了就覆盖策略预设（前端权重滑杆直接透传），不传则使用 policy_id 对应策略的权重。
 type simulateRequest struct {
-	Workload WorkloadSpec `json:"workload"`
-	TenantID *string      `json:"tenant_id"`
-	PolicyID string       `json:"policy_id"`
+	Workload WorkloadSpec       `json:"workload"`
+	TenantID *string            `json:"tenant_id"`
+	PolicyID string             `json:"policy_id"`
+	Weights  *schedcore.Weights `json:"weights,omitempty"`
 }
 
 // simulatePlacement 用当前集群快照跑一次放置决策，并把结果落库。
@@ -261,6 +371,15 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 		if err := policy.Weights.Validate(); err != nil {
 			writeError(c, errBusinessRejected("POLICY_WEIGHTS_INVALID", ErrorDetail{Field: "policy_id", Reason: err.Error()}))
 			return
+		}
+		// 前端可直接带 weights 覆盖策略预设——权重滑杆就是这条路。
+		weights := policy.Weights
+		if req.Weights != nil {
+			if err := req.Weights.Validate(); err != nil {
+				writeError(c, errBusinessRejected("REQUEST_WEIGHTS_INVALID", ErrorDetail{Field: "weights", Reason: err.Error()}))
+				return
+			}
+			weights = *req.Weights
 		}
 
 		start := time.Now()
@@ -301,7 +420,7 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 		}
 
 		clusterCtx := placement.BuildContext(snap, tenants)
-		out, err := schedcore.Place(clusterCtx, toSchedWorkload(req), policy.Weights)
+		out, err := schedcore.Place(clusterCtx, toSchedWorkload(req), weights)
 		if err != nil {
 			writeError(c, errBusinessRejected("PLACEMENT_REJECTED", ErrorDetail{Field: "workload", Reason: err.Error()}))
 			return
@@ -319,7 +438,8 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			Warnings:     out.Warnings,
 			Evidence: map[string]any{
 				"schema_version":      1,
-				"weights":             policy.Weights,
+				"weights":             weights,
+				"policy_id":           policy.ID,
 				"metrics_known":       clusterCtx.MetricsKnown,
 				"metrics_age_seconds": clusterCtx.MetricsAgeSeconds,
 				"node_count":          len(snap.Nodes),
@@ -567,4 +687,58 @@ func dominantShare(used, cap schedcore.Resources) float64 {
 		}
 	}
 	return share
+}
+
+// ---------- 节点级明细（临时前端仪表盘用，非正式契约端点）----------
+
+type nodeItem struct {
+	Name       string              `json:"name"`
+	Ready      bool                `json:"ready"`
+	Allocatable schedcore.Resources `json:"allocatable"`
+	Requested  schedcore.Resources `json:"requested"`
+	Usage      schedcore.Resources `json:"usage"`
+	UsageKnown bool                `json:"usage_known"`
+	PodCount   int                 `json:"pod_count"`
+	Topology   map[string]string   `json:"topology"`
+}
+
+type nodeListResp struct {
+	AsOf      time.Time  `json:"as_of"`
+	MetricsAt *time.Time `json:"metrics_at,omitempty"`
+	Nodes     []nodeItem `json:"nodes"`
+}
+
+// nodeList 返回当前快照的节点级明细（含实际用量）。临时前端仪表盘依赖它，
+// 正式契约端点留待 capacity/overview 扩展后再收敛。
+func nodeList(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.Snapshotter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		snap, err := d.Snapshotter(c.Request.Context())
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		out := make([]nodeItem, 0, len(snap.Nodes))
+		for _, n := range snap.Nodes {
+			out = append(out, nodeItem{
+				Name:        n.Name,
+				Ready:       n.Ready,
+				Allocatable: n.Allocatable,
+				Requested:   n.Requested,
+				Usage:       n.Usage,
+				UsageKnown:  n.UsageKnown,
+				PodCount:    n.PodCount,
+				Topology:    n.Topology,
+			})
+		}
+		var metricsAt *time.Time
+		if !snap.MetricsAt.IsZero() {
+			t := snap.MetricsAt
+			metricsAt = &t
+		}
+		writeOK(c, nodeListResp{AsOf: snap.TakenAt, MetricsAt: metricsAt, Nodes: out})
+	}
 }
