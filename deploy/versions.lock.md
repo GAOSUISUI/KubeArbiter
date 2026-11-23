@@ -17,7 +17,7 @@
 | Kubernetes 集群（kubeadm） | v1.37.2，3 节点 | 2026-11-23 | `kubectl get nodes` → ka-cp1/ka-w1/ka-w2 均 Ready，v1.37.2 |
 | containerd | 2.2.1 | 2026-11-23 | 节点 `CONTAINER-RUNTIME` 列 → `containerd://2.2.1` |
 | Flannel | v0.28.11 | 2026-11-23 | `kubectl -n kube-flannel get ds` → 3/3 READY |
-| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.4.0`（单层 OCI，manifest `sha256:ce3ba45bfb78884bae3cc9488ac25ca55b3138dc345c120ac6f7df730f36e7eb`） | 2026-11-23 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见 |
+| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.5.0`（单层 OCI，manifest `sha256:5e6a06f192f7b55c0e28f06383faafeb3bb7ed7425a26ceab3a7c2f7b44dc69d`） | 2026-11-23 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见 |
 
 > Helm 说明：winget 默认装到 v4.3.2，与冻结包"Helm 3.x 稳定版"冲突，已卸载并改装 v3.20.0。
 > kubectl/helm 二进制位于 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\...`，当前 shell 的 PATH 需重开后才生效。

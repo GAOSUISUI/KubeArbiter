@@ -1,6 +1,7 @@
 // Package capacity 维护集群资源的只读视图。
-// M1 阶段只做两件事：把 kubelet 上报的 Node/Pod 对象转成决策核可用的整数资源量，
-// 以及提供一个可被并发读取的一致性快照。指标（usage/EWMA）在接入 Prometheus 后另行补充。
+// 它把 kubelet 上报的 Node/Pod 对象转成决策核可用的整数资源量，
+// 并提供一个可被并发读取的一致性快照。节点实际用量由 MetricsSource 注入
+// （见 internal/decision/metrics），未注入时快照里的 UsageKnown 全部为 false。
 package capacity
 
 import (
@@ -18,12 +19,27 @@ import (
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
+// MetricsSource 提供按节点聚合后的实际用量。由 internal/decision/metrics.Store 实现。
+// capacity 只定义消费侧接口，避免反向依赖采集包。
+type MetricsSource interface {
+	// NodeUsage 返回节点当前 EWMA 用量与最后样本时间；ok=false 表示该节点暂无指标。
+	NodeUsage(node string) (schedcore.Resources, time.Time, bool)
+	// Newest 返回全部节点中最新样本的时间；零值表示系统还没有任何指标。
+	Newest() time.Time
+}
+
 // View 是 Node/Pod/Namespace 三类 informer 的封装。所有读取都走本地缓存，不直接打 API Server。
 type View struct {
 	factory    informers.SharedInformerFactory
 	nodes      coreinformers.NodeInformer
 	pods       coreinformers.PodInformer
 	namespaces coreinformers.NamespaceInformer
+	metrics    MetricsSource
+}
+
+// UseMetrics 注入指标来源。应在 Run 之前调用；未注入时快照不携带 usage。
+func (v *View) UseMetrics(src MetricsSource) {
+	v.metrics = src
 }
 
 // NodeView 是单个节点的画像。Requested 为该节点上所有非终态 Pod 的 request 之和。
@@ -33,11 +49,14 @@ type NodeView struct {
 	Unschedulable bool
 	Allocatable   schedcore.Resources
 	Requested     schedcore.Resources
-	PodCount      int
-	Labels        map[string]string
-	Taints        []schedcore.Taint
-	HostPorts     map[int32]string
-	Topology      map[string]string
+	// Usage 是节点实际用量（已做 5m EWMA）；UsageKnown 为 false 时该字段无意义。
+	Usage      schedcore.Resources
+	UsageKnown bool
+	PodCount   int
+	Labels     map[string]string
+	Taints     []schedcore.Taint
+	HostPorts  map[int32]string
+	Topology   map[string]string
 }
 
 // PodView 只保留调度决策需要的字段，避免把完整 Pod 对象长期留在内存里。
@@ -57,6 +76,8 @@ type Snapshot struct {
 	TakenAt     time.Time
 	Nodes       []NodeView
 	PendingPods []PodView
+	// MetricsAt 是指标存储中最新样本的时间；零值表示完全没有指标。
+	MetricsAt time.Time
 	// TenantUsage 是按命名空间标签 arbiter.io/tenant 聚合出的已调度资源用量（含目标租户之外的所有租户）。
 	TenantUsage map[string]schedcore.Resources
 }
@@ -138,7 +159,7 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 	}
 
 	for _, node := range nodes {
-		byName[node.Name] = &NodeView{
+		nv := &NodeView{
 			Name:          node.Name,
 			Ready:         nodeReady(node),
 			Unschedulable: node.Spec.Unschedulable,
@@ -148,6 +169,14 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 			HostPorts:     make(map[int32]string),
 			Topology:      nodeTopology(node),
 		}
+		// 指标可能缺某个节点（如 kubelet 暂不可达）：只标记该节点未知，整个快照仍可用。
+		if v.metrics != nil {
+			if usage, _, ok := v.metrics.NodeUsage(node.Name); ok {
+				nv.Usage = usage
+				nv.UsageKnown = true
+			}
+		}
+		byName[node.Name] = nv
 	}
 
 	for _, pod := range pods {
@@ -198,6 +227,9 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 		}
 		return out.PendingPods[i].Name < out.PendingPods[j].Name
 	})
+	if v.metrics != nil {
+		out.MetricsAt = v.metrics.Newest()
+	}
 	return out, nil
 }
 

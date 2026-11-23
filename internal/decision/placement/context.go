@@ -8,8 +8,9 @@ import (
 )
 
 // BuildContext 把 informer 快照转换为 schedcore.ClusterContext。
-// 指标（Usage / MetricsAge）M1 尚未接入，此时 V1 显式标记为未知，
-// 决策核会据此降权 load 维度并给出 METRICS_MISSING 警告，而不是臆造数值。
+// 指标新鲜度由快照里的 MetricsAt 决定：零值表示完全取不到指标，此时
+// MetricsKnown=false，决策核会降权 load 维度并给出 METRICS_MISSING 警告，
+// 而不是臆造数值。单节点缺指标只影响该节点的 UsageKnown。
 func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantState) schedcore.ClusterContext {
 	nodes := make([]schedcore.Node, 0, len(snap.Nodes))
 	topologyCounts := make(map[string]int)
@@ -22,6 +23,8 @@ func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantSta
 			Unschedulable: n.Unschedulable,
 			Allocatable:   n.Allocatable,
 			Requested:     n.Requested,
+			Usage:         n.Usage,
+			UsageKnown:    n.UsageKnown,
 			Labels:        n.Labels,
 			Taints:        n.Taints,
 			HostPorts:     n.HostPorts,
@@ -68,14 +71,23 @@ func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantSta
 		states[id] = ts
 	}
 
+	var metricsAge float64
+	if !snap.MetricsAt.IsZero() {
+		metricsAge = snap.TakenAt.Sub(snap.MetricsAt).Seconds()
+		// 时钟回拨或手动构造的快照可能让 age 为负；按"刚采集"处理，避免误报过期。
+		if metricsAge < 0 {
+			metricsAge = 0
+		}
+	}
+
 	return schedcore.ClusterContext{
 		Nodes:             nodes,
 		Capacity:          capacitySum,
 		MinPendingPod:     minPendingRequest(snap.PendingPods),
 		Tenants:           states,
 		TopologyCounts:    topologyCounts,
-		MetricsKnown:      false,
-		MetricsAgeSeconds: 0,
+		MetricsKnown:      !snap.MetricsAt.IsZero(),
+		MetricsAgeSeconds: metricsAge,
 	}
 }
 

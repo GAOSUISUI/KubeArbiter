@@ -18,6 +18,7 @@ import (
 
 	"github.com/kubearbiter/kubearbiter/internal/api"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
+	"github.com/kubearbiter/kubearbiter/internal/decision/metrics"
 	"github.com/kubearbiter/kubearbiter/internal/store/postgres"
 )
 
@@ -131,6 +132,11 @@ func startClusterView(ctx context.Context) (*capacity.View, error) {
 	}
 
 	view := capacity.NewView(client, 5*time.Minute)
+	// 指标采集独立于 informer：即使 kubelet 暂时不可达，决策仍会带着
+	// METRICS_MISSING 警告降级运行，而不是阻塞启动。
+	usage := metrics.NewStore()
+	view.UseMetrics(usage)
+	go metrics.NewCollector(client, usage).Run(ctx)
 	go func() {
 		if err := view.Run(ctx); err != nil {
 			log.Printf("informer 停止: %v", err)

@@ -49,7 +49,7 @@ func TestBuildContextMapsNodesAndCapacity(t *testing.T) {
 		t.Fatalf("z2 计数应为 5，实际 %d", got)
 	}
 	if ctx.MetricsKnown {
-		t.Fatal("M1 未接指标，MetricsKnown 应为 false")
+		t.Fatal("快照未携带指标时 MetricsKnown 应为 false")
 	}
 	if ctx.Tenants == nil {
 		t.Fatal("Tenants 不应为 nil，避免调用方再判空")
@@ -118,5 +118,41 @@ func TestBuildContextFillsAllocatedAndFairShare(t *testing.T) {
 	}
 	if b.Allocated.CPUMilli != 100 || b.FairShare != 0.25 {
 		t.Fatalf("t-b 应补出用量与份额，实际 %+v", b)
+	}
+}
+
+func TestBuildContextUsesSnapshotMetrics(t *testing.T) {
+	taken := time.Date(2026, 11, 23, 10, 0, 20, 0, time.UTC)
+	n := nodeView("ka-w1", true, 4000, 8<<30, 3, "z1")
+	n.Usage = schedcore.Resources{CPUMilli: 900, MemBytes: 2 << 30}
+	n.UsageKnown = true
+
+	ctx := BuildContext(capacity.Snapshot{
+		TakenAt:   taken,
+		MetricsAt: taken.Add(-5 * time.Second),
+		Nodes:     []capacity.NodeView{n},
+	}, nil)
+
+	if !ctx.MetricsKnown {
+		t.Fatal("快照带 MetricsAt 时应视为指标已知")
+	}
+	if ctx.MetricsAgeSeconds != 5 {
+		t.Fatalf("指标年龄应为 5s，实际 %v", ctx.MetricsAgeSeconds)
+	}
+	if !ctx.Nodes[0].UsageKnown || ctx.Nodes[0].Usage.CPUMilli != 900 {
+		t.Fatalf("节点用量应透传，实际 %+v", ctx.Nodes[0])
+	}
+}
+
+func TestBuildContextClampsNegativeMetricsAge(t *testing.T) {
+	taken := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	// 时钟回拨导致样本时间晚于取数时间：按刚采集处理，不应误报 METRICS_STALE。
+	ctx := BuildContext(capacity.Snapshot{
+		TakenAt:   taken,
+		MetricsAt: taken.Add(2 * time.Second),
+	}, nil)
+
+	if !ctx.MetricsKnown || ctx.MetricsAgeSeconds != 0 {
+		t.Fatalf("负年龄应归零，实际 known=%v age=%v", ctx.MetricsKnown, ctx.MetricsAgeSeconds)
 	}
 }

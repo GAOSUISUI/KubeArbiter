@@ -133,7 +133,8 @@ func webhookMutate(d Deps) gin.HandlerFunc {
 		}
 		tenants[tenant] = state
 
-		out, err := schedcore.Place(placement.BuildContext(snap, tenants), toSchedWorkload(simulateRequest{
+		clusterCtx := placement.BuildContext(snap, tenants)
+		out, err := schedcore.Place(clusterCtx, toSchedWorkload(simulateRequest{
 			Workload: workload,
 			TenantID: &tenant,
 			PolicyID: policy.ID,
@@ -160,6 +161,7 @@ func webhookMutate(d Deps) gin.HandlerFunc {
 				"schema_version": 1,
 				"weights":        policy.Weights,
 				"source":         "admission-webhook",
+				"metrics_known":  clusterCtx.MetricsKnown,
 				"pod":            pod.Namespace + "/" + pod.Name,
 			},
 		}

@@ -300,7 +300,8 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			tenants[state.ID] = state
 		}
 
-		out, err := schedcore.Place(placement.BuildContext(snap, tenants), toSchedWorkload(req), policy.Weights)
+		clusterCtx := placement.BuildContext(snap, tenants)
+		out, err := schedcore.Place(clusterCtx, toSchedWorkload(req), policy.Weights)
 		if err != nil {
 			writeError(c, errBusinessRejected("PLACEMENT_REJECTED", ErrorDetail{Field: "workload", Reason: err.Error()}))
 			return
@@ -317,11 +318,12 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			Degraded:     degraded(out.Warnings),
 			Warnings:     out.Warnings,
 			Evidence: map[string]any{
-				"schema_version": 1,
-				"weights":        policy.Weights,
-				"metrics_known":  false,
-				"node_count":     len(snap.Nodes),
-				"elapsed_ms":     time.Since(start).Milliseconds(),
+				"schema_version":      1,
+				"weights":             policy.Weights,
+				"metrics_known":       clusterCtx.MetricsKnown,
+				"metrics_age_seconds": clusterCtx.MetricsAgeSeconds,
+				"node_count":          len(snap.Nodes),
+				"elapsed_ms":          time.Since(start).Milliseconds(),
 			},
 			CreatedAt: time.Now().UTC(),
 		}

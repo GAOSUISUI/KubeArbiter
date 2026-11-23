@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
+	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
 func TestHashIsStable(t *testing.T) {
@@ -51,5 +52,23 @@ func TestHashIgnoresTakenAt(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Fatalf("TakenAt 不应参与哈希: %s != %s", h1, h2)
+	}
+}
+
+func TestHashIncludesUsage(t *testing.T) {
+	n := nodeView("ka-w1", true, 4000, 8<<30, 3, "z1")
+	h1, err := Hash(capacity.Snapshot{Nodes: []capacity.NodeView{n}})
+	if err != nil {
+		t.Fatalf("计算哈希失败: %v", err)
+	}
+	// 实际用量是决策输入，必须进入哈希，否则同一份快照无法区分 load 维度差异。
+	n.Usage = schedcore.Resources{CPUMilli: 900, MemBytes: 1 << 30}
+	n.UsageKnown = true
+	h2, err := Hash(capacity.Snapshot{Nodes: []capacity.NodeView{n}})
+	if err != nil {
+		t.Fatalf("计算哈希失败: %v", err)
+	}
+	if h1 == h2 {
+		t.Fatal("用量变化后哈希应变化")
 	}
 }

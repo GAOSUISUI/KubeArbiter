@@ -21,6 +21,10 @@ rules:
   - apiGroups: [""]
     resources: ["nodes", "pods", "namespaces"]
     verbs: ["get", "list", "watch"]
+  # 指标采集走 API Server 代理 kubelet 的 stats/summary，需要 nodes/proxy 的 get。
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -63,7 +67,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: arbiter-api
-          image: kubearbiter/arbiter-api:0.4.0
+          image: kubearbiter/arbiter-api:0.5.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

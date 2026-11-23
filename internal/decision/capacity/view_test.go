@@ -289,3 +289,53 @@ func TestSnapshotOrdersDeterministically(t *testing.T) {
 		t.Fatalf("PendingPods 未按 namespace/name 排序: %+v", snap.PendingPods)
 	}
 }
+
+// fakeMetrics 是 MetricsSource 的测试替身，只为验证快照的接线逻辑。
+type fakeMetrics struct {
+	usage  map[string]schedcore.Resources
+	newest time.Time
+}
+
+func (f fakeMetrics) NodeUsage(node string) (schedcore.Resources, time.Time, bool) {
+	u, ok := f.usage[node]
+	return u, f.newest, ok
+}
+
+func (f fakeMetrics) Newest() time.Time { return f.newest }
+
+func TestSnapshotAttachesNodeUsage(t *testing.T) {
+	metricsAt := time.Date(2026, 11, 23, 10, 0, 5, 0, time.UTC)
+	v := newTestView(t, testNode("n1"), testNode("n2"))
+	v.UseMetrics(fakeMetrics{
+		usage: map[string]schedcore.Resources{
+			"n1": {CPUMilli: 1500, MemBytes: 6 << 30},
+		},
+		newest: metricsAt,
+	})
+
+	snap, err := v.Snapshot(metricsAt.Add(5 * time.Second))
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if !snap.MetricsAt.Equal(metricsAt) {
+		t.Fatalf("MetricsAt = %v, want %v", snap.MetricsAt, metricsAt)
+	}
+	if !snap.Nodes[0].UsageKnown || snap.Nodes[0].Usage.CPUMilli != 1500 {
+		t.Fatalf("n1 应带上用量，实际 %+v", snap.Nodes[0])
+	}
+	// 缺指标的节点仍保留在快照里，只标记为未知，不影响未注入指标时的行为。
+	if snap.Nodes[1].UsageKnown {
+		t.Fatalf("n2 无指标，UsageKnown 应为 false: %+v", snap.Nodes[1])
+	}
+}
+
+func TestSnapshotWithoutMetricsSource(t *testing.T) {
+	v := newTestView(t, testNode("n1"))
+	snap, err := v.Snapshot(time.Now())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if !snap.MetricsAt.IsZero() || snap.Nodes[0].UsageKnown {
+		t.Fatalf("未注入指标来源时不应携带 usage: %+v", snap)
+	}
+}
