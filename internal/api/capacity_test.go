@@ -88,6 +88,66 @@ func TestListTenantCapacity(t *testing.T) {
 	}
 }
 
+func TestCapacityOverview(t *testing.T) {
+	store := NewMemoryStore()
+	snap := capacity.Snapshot{
+		TakenAt: time.Date(2026, 11, 23, 6, 0, 0, 0, time.UTC),
+		Nodes: []capacity.NodeView{
+			{Name: "ka-w1", Ready: true, Allocatable: schedcore.Resources{CPUMilli: 4000, MemBytes: 8 << 30},
+				Requested: schedcore.Resources{CPUMilli: 1000, MemBytes: 2 << 30}},
+			{Name: "ka-cp1", Ready: false, Allocatable: schedcore.Resources{CPUMilli: 2000, MemBytes: 4 << 30}},
+		},
+		// 两个租户主导份额相同（100/400 = 0.25），Jain 指数应为 1。
+		TenantUsage: map[string]schedcore.Resources{
+			"t-a": {CPUMilli: 1000, MemBytes: 1 << 30},
+			"t-b": {CPUMilli: 1000, MemBytes: 1 << 30},
+		},
+	}
+	router := NewRouter(Deps{
+		Policies:  store,
+		Decisions: store,
+		Snapshotter: func(context.Context) (capacity.Snapshot, error) {
+			return snap, nil
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/capacity/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			Nodes struct {
+				Count       int               `json:"count"`
+				Allocatable schedcore.Resources `json:"allocatable"`
+				Requested   schedcore.Resources `json:"requested"`
+			} `json:"nodes"`
+			TenantCount int      `json:"tenant_count"`
+			JainIndex   *float64 `json:"jain_index"`
+			SLOSummary  any      `json:"slo_summary"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("响应不是合法 JSON: %v", err)
+	}
+	if payload.Data.Nodes.Count != 2 {
+		t.Fatalf("节点数应为 2（含未 Ready），实际 %d", payload.Data.Nodes.Count)
+	}
+	if payload.Data.Nodes.Allocatable.CPUMilli != 6000 {
+		t.Fatalf("可分配 CPU 应为 6000m（含未 Ready 节点的账面值），实际 %d", payload.Data.Nodes.Allocatable.CPUMilli)
+	}
+	if payload.Data.TenantCount != 2 {
+		t.Fatalf("活跃租户应为 2，实际 %d", payload.Data.TenantCount)
+	}
+	if payload.Data.JainIndex == nil || *payload.Data.JainIndex < 0.999 {
+		t.Fatalf("份额相等时 Jain 指数应为 1，实际 %v", payload.Data.JainIndex)
+	}
+	if payload.Data.SLOSummary != nil {
+		t.Fatalf("SLO 未接入时应为 null，实际 %v", payload.Data.SLOSummary)
+	}
+}
+
 func TestListTenantCapacityRequiresSnapshotter(t *testing.T) {
 	store := NewMemoryStore()
 	router := NewRouter(Deps{Policies: store, Decisions: store, TenantCatalog: store})

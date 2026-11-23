@@ -64,6 +64,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	v1.GET("/policies", listPolicies(d))
+	v1.GET("/capacity/overview", capacityOverview(d))
 	v1.GET("/capacity/tenants", listTenantCapacity(d))
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
@@ -395,6 +396,63 @@ func degraded(warnings []schedcore.WarningCode) bool {
 		}
 	}
 	return false
+}
+
+// capacityTotals 对应 CapacityTotals：节点数、可分配总量、已请求总量。
+type capacityTotals struct {
+	Count       int               `json:"count"`
+	Allocatable schedcore.Resources `json:"allocatable"`
+	Requested   schedcore.Resources `json:"requested"`
+}
+
+type capacityOverviewResp struct {
+	AsOf        time.Time        `json:"as_of"`
+	Nodes       capacityTotals   `json:"nodes"`
+	TenantCount int              `json:"tenant_count"`
+	JainIndex   *float64         `json:"jain_index"`
+	SLOSummary  any              `json:"slo_summary"`
+}
+
+// capacityOverview 汇总节点容量与租户公平性。SLO 汇总要等指标与 SLO 评估接入，
+// 按契约返回 null，前端展示"无数据"而不是 0。
+func capacityOverview(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if d.Snapshotter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		snap, err := d.Snapshotter(c.Request.Context())
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+
+		totals := capacityTotals{Count: len(snap.Nodes)}
+		capacitySum := clusterCapacity(snap)
+		for _, n := range snap.Nodes {
+			totals.Allocatable = totals.Allocatable.Add(n.Allocatable)
+			totals.Requested = totals.Requested.Add(n.Requested)
+		}
+
+		// 主导份额参与 Jain 指数；没有租户或容量为 0 时无有意义的值。
+		var jain *float64
+		if len(snap.TenantUsage) > 0 && !capacitySum.IsZero() {
+			shares := make([]float64, 0, len(snap.TenantUsage))
+			for _, used := range snap.TenantUsage {
+				shares = append(shares, dominantShare(used, capacitySum))
+			}
+			v := schedcore.JainIndex(shares)
+			jain = &v
+		}
+
+		writeOK(c, capacityOverviewResp{
+			AsOf:        snap.TakenAt,
+			Nodes:       totals,
+			TenantCount: len(snap.TenantUsage),
+			JainIndex:   jain,
+			SLOSummary:  nil,
+		})
+	}
 }
 
 // tenantCapacityItem 对应 openapi.yaml 的 TenantCapacity。
