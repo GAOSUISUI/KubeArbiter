@@ -40,7 +40,7 @@
 
 | 组件 | 计划版本 | 阻塞原因 |
 |---|---|---|
-| Docker Desktop | 当前稳定版 | 用户本轮选择暂不安装；PostgreSQL 16 容器化依赖它 |
-| PostgreSQL 16 | 16.x 镜像 digest | 等待 Docker |
+| Docker Desktop | — | 用户决定不安装；PostgreSQL 改用集群内 containerd 直接运行 |
+| PostgreSQL 16 | 16.16（Debian 16.16-1.pgdg13+1），`postgres@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f` | 已部署：`kubearbiter/postgres-0`，hostPath `/var/lib/kubearbiter/pg`，trust 认证仅集群内可达 |
 | ingress-nginx | 与集群兼容的稳定版 | M2 前回填 `helm list -n ingress-nginx` |
 | Node.js LTS | LTS | M5 前回填 |

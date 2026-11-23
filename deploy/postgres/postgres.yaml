@@ -1,0 +1,83 @@
+# KubeArbiter 开发用 PostgreSQL 16。
+# 仅用于本地 kubeadm 集群：数据落在 ka-cp1 的 hostPath，启用 trust 认证（无密码），
+# Service 仅 ClusterIP、不对外暴露；仅供集群内组件与调试 Pod 访问。
+# 正式凭据方案（Secret + SCRAM）在 M2 接入认证时由用户提供，不在仓库内预置密码。
+# 镜像 digest 与 deploy/versions.lock.md 保持一致。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubearbiter
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kubearbiter
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: kubearbiter
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # 数据在 hostPath 上，节点固定为 ka-cp1，避免换节点后数据"消失"。
+      nodeSelector:
+        kubernetes.io/hostname: ka-cp1
+      tolerations:
+        # 控制面默认带 NoSchedule 污点，数据在本机 hostPath，必须允许落在 ka-cp1。
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: postgres
+          image: docker.m.daocloud.io/library/postgres:16@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: kubearbiter
+            - name: POSTGRES_DB
+              value: kubearbiter
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "kubearbiter", "-d", "kubearbiter"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          hostPath:
+            path: /var/lib/kubearbiter/pg
+            type: Directory
