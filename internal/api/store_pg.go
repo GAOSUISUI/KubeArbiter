@@ -1,0 +1,248 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
+)
+
+// jsonDoc 是库里所有 jsonb 列的统一信封：{"schema_version":1,"items":[...]}，
+// 与 db/schema.sql 的 *_versioned CHECK 约束对应。
+const jsonSchemaVersion = 1
+
+type itemsDoc[T any] struct {
+	SchemaVersion int `json:"schema_version"`
+	Items         []T `json:"items"`
+}
+
+type evidenceDoc struct {
+	SchemaVersion int              `json:"schema_version"`
+	Warnings      []schedcore.WarningCode `json:"warnings,omitempty"`
+	Detail        map[string]any   `json:"detail,omitempty"`
+}
+
+// PGStore 是 PolicyReader / DecisionReader / DecisionWriter 的 PostgreSQL 实现。
+// M1 的内存实现保留给单测：推开库跑 handler 逻辑不必依赖真实实例。
+type PGStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewPGStore(pool *pgxpool.Pool) *PGStore {
+	return &PGStore{pool: pool}
+}
+
+var (
+	_ PolicyReader   = (*PGStore)(nil)
+	_ DecisionReader = (*PGStore)(nil)
+	_ DecisionWriter = (*PGStore)(nil)
+)
+
+func (s *PGStore) ListPolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, name, strategy, weights, is_default
+		FROM policies ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("查询策略: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Policy, 0, 4)
+	for rows.Next() {
+		var (
+			p       Policy
+			strategy string
+			raw     []byte
+		)
+		if err := rows.Scan(&p.ID, &p.Name, &strategy, &raw, &p.IsDefault); err != nil {
+			return nil, fmt.Errorf("扫描策略: %w", err)
+		}
+		p.Strategy = schedcore.Strategy(strategy)
+		if p.Weights, err = decodeWeights(raw); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) GetPolicy(ctx context.Context, id string) (Policy, bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return Policy{}, false, nil
+	}
+	var (
+		p        Policy
+		strategy string
+		raw      []byte
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, name, strategy, weights, is_default
+		FROM policies WHERE id = $1`, id).
+		Scan(&p.ID, &p.Name, &strategy, &raw, &p.IsDefault)
+	if err == pgx.ErrNoRows {
+		return Policy{}, false, nil
+	}
+	if err != nil {
+		return Policy{}, false, fmt.Errorf("查询策略: %w", err)
+	}
+	p.Strategy = schedcore.Strategy(strategy)
+	if p.Weights, err = decodeWeights(raw); err != nil {
+		return Policy{}, false, err
+	}
+	return p, true, nil
+}
+
+func (s *PGStore) ListDecisions(ctx context.Context, f DecisionFilter) ([]PlacementDecision, error) {
+	q := `
+		SELECT id::text, workload, namespace, tenant_id::text, policy_id::text,
+		       status, chosen_node, degraded, snapshot_hash, scores, filtered, evidence, created_at
+		FROM placement_decisions
+		WHERE ($1::uuid IS NULL OR tenant_id = $1::uuid)
+		  AND ($2::uuid IS NULL OR policy_id = $2::uuid)
+		ORDER BY created_at DESC, id DESC`
+	rows, err := s.pool.Query(ctx, q, nullableUUID(f.TenantID), nullableUUID(f.PolicyID))
+	if err != nil {
+		return nil, fmt.Errorf("查询决策: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]PlacementDecision, 0, 20)
+	for rows.Next() {
+		d, err := scanDecision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) GetDecision(ctx context.Context, id string) (PlacementDecision, bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return PlacementDecision{}, false, nil
+	}
+	q := `
+		SELECT id::text, workload, namespace, tenant_id::text, policy_id::text,
+		       status, chosen_node, degraded, snapshot_hash, scores, filtered, evidence, created_at
+		FROM placement_decisions WHERE id = $1`
+	d, err := scanDecision(s.pool.QueryRow(ctx, q, id))
+	if err == pgx.ErrNoRows {
+		return PlacementDecision{}, false, nil
+	}
+	if err != nil {
+		return PlacementDecision{}, false, err
+	}
+	return d, true, nil
+}
+
+func (s *PGStore) CreateDecision(ctx context.Context, in PlacementDecision) (PlacementDecision, error) {
+	workload, namespace := "", ""
+	if in.Workload != nil {
+		workload, namespace = in.Workload.Name, in.Workload.Namespace
+	}
+	scores, err := json.Marshal(itemsDoc[schedcore.NodeScore]{SchemaVersion: jsonSchemaVersion, Items: in.Scores})
+	if err != nil {
+		return PlacementDecision{}, fmt.Errorf("序列化 scores: %w", err)
+	}
+	filtered, err := json.Marshal(itemsDoc[schedcore.FilteredNode]{SchemaVersion: jsonSchemaVersion, Items: in.Filtered})
+	if err != nil {
+		return PlacementDecision{}, fmt.Errorf("序列化 filtered: %w", err)
+	}
+	evidence, err := json.Marshal(evidenceDoc{SchemaVersion: jsonSchemaVersion, Warnings: in.Warnings, Detail: in.Evidence})
+	if err != nil {
+		return PlacementDecision{}, fmt.Errorf("序列化 evidence: %w", err)
+	}
+
+	var policyID any
+	if in.PolicyID != "" {
+		policyID = in.PolicyID
+	}
+	q := `
+		INSERT INTO placement_decisions
+		    (workload, namespace, tenant_id, policy_id, status, chosen_node,
+		     degraded, snapshot_hash, scores, filtered, evidence)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id::text, created_at`
+	err = s.pool.QueryRow(ctx, q,
+		workload, namespace, in.TenantID, policyID, string(in.Status), in.ChosenNode,
+		in.Degraded, in.SnapshotHash, scores, filtered, evidence,
+	).Scan(&in.ID, &in.CreatedAt)
+	if err != nil {
+		return PlacementDecision{}, fmt.Errorf("写入决策: %w", err)
+	}
+	return in, nil
+}
+
+// scanDecision 同时适配 pgx.Row 与 pgx.Rows，避免两份重复的 Scan 代码。
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+func scanDecision(row scannable) (PlacementDecision, error) {
+	var (
+		d                          PlacementDecision
+		workload, namespace        string
+		tenantID, policyID, chosen *string
+		status                     string
+		scores, filtered, evidence []byte
+	)
+	if err := row.Scan(&d.ID, &workload, &namespace, &tenantID, &policyID,
+		&status, &chosen, &d.Degraded, &d.SnapshotHash, &scores, &filtered, &evidence, &d.CreatedAt); err != nil {
+		return PlacementDecision{}, err
+	}
+	d.Workload = &WorkloadSpec{Name: workload, Namespace: namespace}
+	d.Status = schedcore.Status(status)
+	d.TenantID = tenantID
+	d.ChosenNode = chosen
+	if policyID != nil {
+		d.PolicyID = *policyID
+	}
+	if err := decodeItems(scores, &d.Scores); err != nil {
+		return PlacementDecision{}, err
+	}
+	if err := decodeItems(filtered, &d.Filtered); err != nil {
+		return PlacementDecision{}, err
+	}
+	var ev evidenceDoc
+	if err := json.Unmarshal(evidence, &ev); err != nil {
+		return PlacementDecision{}, fmt.Errorf("解析 evidence: %w", err)
+	}
+	d.Warnings = ev.Warnings
+	d.Evidence = ev.Detail
+	return d, nil
+}
+
+func decodeItems[T any](raw []byte, dst *[]T) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc itemsDoc[T]
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("解析 jsonb items: %w", err)
+	}
+	*dst = doc.Items
+	return nil
+}
+
+func decodeWeights(raw []byte) (schedcore.Weights, error) {
+	var doc struct {
+		SchemaVersion int `json:"schema_version"`
+		schedcore.Weights
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return schedcore.Weights{}, fmt.Errorf("解析策略权重: %w", err)
+	}
+	return doc.Weights, nil
+}
+
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}

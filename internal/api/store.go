@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
@@ -72,15 +74,21 @@ type DecisionFilter struct {
 	PolicyID string
 }
 
-// PolicyReader / DecisionReader 是 API 层对存储的最小只读依赖；
-// M1 由内存实现，后面换成 PostgreSQL 实现时 handler 不动。
+// PolicyReader / DecisionReader 是 API 层对存储的最小依赖；
+// M1 由内存实现，M2 起由 PostgreSQL 实现，handler 不动。
 type PolicyReader interface {
 	ListPolicies(ctx context.Context) ([]Policy, error)
+	GetPolicy(ctx context.Context, id string) (Policy, bool, error)
 }
 
 type DecisionReader interface {
 	ListDecisions(ctx context.Context, f DecisionFilter) ([]PlacementDecision, error)
 	GetDecision(ctx context.Context, id string) (PlacementDecision, bool, error)
+}
+
+// DecisionWriter 只在模拟/落地流程中使用；dry-run 语义由调用方决定是否调用。
+type DecisionWriter interface {
+	CreateDecision(ctx context.Context, d PlacementDecision) (PlacementDecision, error)
 }
 
 // MemoryStore 是只读视图的占位实现：没有数据库时不编造数据，默认返回空列表。
@@ -148,4 +156,29 @@ func (s *MemoryStore) GetDecision(_ context.Context, id string) (PlacementDecisi
 		}
 	}
 	return PlacementDecision{}, false, nil
+}
+
+func (s *MemoryStore) GetPolicy(_ context.Context, id string) (Policy, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, p := range s.policies {
+		if p.ID == id {
+			return p, true, nil
+		}
+	}
+	return Policy{}, false, nil
+}
+
+// CreateDecision 为内存实现补齐 ID 与时间戳，行为与 PostgreSQL 默认值保持一致。
+func (s *MemoryStore) CreateDecision(_ context.Context, d PlacementDecision) (PlacementDecision, error) {
+	if d.ID == "" {
+		d.ID = uuid.NewString()
+	}
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.decisions = append(s.decisions, d)
+	return d, nil
 }

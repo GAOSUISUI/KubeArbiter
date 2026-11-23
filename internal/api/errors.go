@@ -55,6 +55,12 @@ func errUnavailable() *apiError {
 	return &apiError{code: CodeUnavailable, message: msgUnavailable}
 }
 
+// errBusinessRejected 用于业务校验不通过（如策略权重非法、放置被判拒绝）。
+// message 由调用方给出稳定的机器可读值。
+func errBusinessRejected(message string, details ...ErrorDetail) *apiError {
+	return &apiError{code: CodeBusinessRejected, message: message, details: details}
+}
+
 func httpStatus(code int) int {
 	switch code {
 	case CodeOK:

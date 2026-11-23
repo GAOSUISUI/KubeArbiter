@@ -6,10 +6,15 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
+	"github.com/kubearbiter/kubearbiter/internal/decision/placement"
+	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
 const (
@@ -17,10 +22,13 @@ const (
 	maxLimit     = 200
 )
 
-// Deps 是 API 层的只读依赖集合，由 cmd/arbiter-api 注入。
+// Deps 是 API 层的依赖集合，由 cmd/arbiter-api 注入。
 type Deps struct {
 	Policies  PolicyReader
 	Decisions DecisionReader
+	Writer    DecisionWriter
+	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
+	Snapshotter func(context.Context) (capacity.Snapshot, error)
 	// Checks 为健康检查集合，key 为依赖名（如 "postgres"、"k8s"）。
 	Checks map[string]func(context.Context) error
 }
@@ -31,6 +39,9 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.Policies == nil && d.Decisions == nil {
 		store := NewMemoryStore()
 		d.Policies, d.Decisions = store, store
+		if d.Writer == nil {
+			d.Writer = store
+		}
 	}
 	if d.Policies == nil {
 		d.Policies = NewMemoryStore()
@@ -48,6 +59,7 @@ func NewRouter(d Deps) *gin.Engine {
 	v1.GET("/policies", listPolicies(d))
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
+	v1.POST("/placement/simulate", simulatePlacement(d))
 
 	r.NoRoute(func(c *gin.Context) {
 		writeError(c, errNotFound())
@@ -193,4 +205,167 @@ func decodeCursor(raw string) (string, bool) {
 		return "", false
 	}
 	return string(b), true
+}
+
+// simulateRequest 对应 openapi.yaml 的 PlacementSimulateRequest。
+type simulateRequest struct {
+	Workload WorkloadSpec `json:"workload"`
+	TenantID *string      `json:"tenant_id"`
+	PolicyID string       `json:"policy_id"`
+}
+
+// simulatePlacement 用当前集群快照跑一次放置决策，并把结果落库。
+// 它只做决策不触碰集群对象：真正改写 nodeAffinity 的是 admission webhook（M4）。
+func simulatePlacement(d Deps) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		if d.Snapshotter == nil {
+			writeError(c, errUnavailable())
+			return
+		}
+
+		var req simulateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "body", Reason: "JSON 解析失败: " + err.Error()}))
+			return
+		}
+		if details := validateSimulate(req); len(details) > 0 {
+			writeError(c, errInvalidArgument(details...))
+			return
+		}
+
+		policy, ok, err := d.Policies.GetPolicy(ctx, req.PolicyID)
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		if !ok {
+			writeError(c, errNotFound())
+			return
+		}
+		if err := policy.Weights.Validate(); err != nil {
+			writeError(c, errBusinessRejected("POLICY_WEIGHTS_INVALID", ErrorDetail{Field: "policy_id", Reason: err.Error()}))
+			return
+		}
+
+		start := time.Now()
+		snap, err := d.Snapshotter(ctx)
+		if err != nil {
+			writeError(c, errUnavailable())
+			return
+		}
+		hash, err := placement.Hash(snap)
+		if err != nil {
+			writeError(c, errInternal())
+			return
+		}
+
+		// 租户权重与配额 M3 才落库；M2 只保证"指定了租户就参与公平性计算"。
+		tenants := map[string]schedcore.TenantState{}
+		if req.TenantID != nil {
+			tenants[*req.TenantID] = schedcore.TenantState{ID: *req.TenantID, Weight: 1}
+		}
+
+		out, err := schedcore.Place(placement.BuildContext(snap, tenants), toSchedWorkload(req), policy.Weights)
+		if err != nil {
+			writeError(c, errBusinessRejected("PLACEMENT_REJECTED", ErrorDetail{Field: "workload", Reason: err.Error()}))
+			return
+		}
+
+		decision := PlacementDecision{
+			Status:       out.Status,
+			Workload:     &req.Workload,
+			TenantID:     req.TenantID,
+			PolicyID:     policy.ID,
+			SnapshotHash: hash,
+			Scores:       out.Scores,
+			Filtered:     out.Filtered,
+			Degraded:     degraded(out.Warnings),
+			Warnings:     out.Warnings,
+			Evidence: map[string]any{
+				"schema_version": 1,
+				"weights":        policy.Weights,
+				"metrics_known":  false,
+				"node_count":     len(snap.Nodes),
+				"elapsed_ms":     time.Since(start).Milliseconds(),
+			},
+			CreatedAt: time.Now().UTC(),
+		}
+		if out.ChosenNode != "" {
+			chosen := out.ChosenNode
+			decision.ChosenNode = &chosen
+		}
+
+		if d.Writer != nil {
+			saved, err := d.Writer.CreateDecision(ctx, decision)
+			if err != nil {
+				writeError(c, errUnavailable())
+				return
+			}
+			decision = saved
+		}
+		writeOK(c, decision)
+	}
+}
+
+func validateSimulate(req simulateRequest) []ErrorDetail {
+	var details []ErrorDetail
+	if strings.TrimSpace(req.Workload.Name) == "" {
+		details = append(details, ErrorDetail{Field: "workload.name", Reason: "不能为空"})
+	}
+	if strings.TrimSpace(req.Workload.Namespace) == "" {
+		details = append(details, ErrorDetail{Field: "workload.namespace", Reason: "不能为空"})
+	}
+	if req.Workload.Replicas < 1 {
+		details = append(details, ErrorDetail{Field: "workload.replicas", Reason: "至少为 1"})
+	}
+	if req.Workload.Requests.CPUMilli < 0 || req.Workload.Requests.MemBytes < 0 {
+		details = append(details, ErrorDetail{Field: "workload.requests", Reason: "不能为负数"})
+	}
+	if _, err := uuid.Parse(req.PolicyID); err != nil {
+		details = append(details, ErrorDetail{Field: "policy_id", Reason: "必须是 UUID"})
+	}
+	if req.TenantID != nil {
+		if _, err := uuid.Parse(*req.TenantID); err != nil {
+			details = append(details, ErrorDetail{Field: "tenant_id", Reason: "必须是 UUID"})
+		}
+	}
+	return details
+}
+
+func toSchedWorkload(req simulateRequest) schedcore.Workload {
+	spec := req.Workload
+	wl := schedcore.Workload{
+		Name:         spec.Name,
+		Namespace:    spec.Namespace,
+		Replicas:     spec.Replicas,
+		Requests:     spec.Requests,
+		NodeSelector: spec.NodeSelector,
+		HostPorts:    spec.HostPorts,
+	}
+	if req.TenantID != nil {
+		wl.TenantID = *req.TenantID
+	}
+	for _, t := range spec.Tolerations {
+		wl.Tolerations = append(wl.Tolerations, schedcore.Toleration{
+			Key: t.Key, Operator: t.Operator, Value: t.Value, Effect: t.Effect,
+		})
+	}
+	if spec.TopologySpread != nil {
+		wl.TopologySpread = &schedcore.TopologySpread{
+			TopologyKey: spec.TopologySpread.TopologyKey,
+			MaxSkew:     spec.TopologySpread.MaxSkew,
+		}
+	}
+	return wl
+}
+
+// degraded 只在指标缺失/过期时置位；单纯没有候选节点属于正常拒绝，不算降级。
+func degraded(warnings []schedcore.WarningCode) bool {
+	for _, w := range warnings {
+		if w == schedcore.WarnMetricsMissing || w == schedcore.WarnMetricsStale {
+			return true
+		}
+	}
+	return false
 }

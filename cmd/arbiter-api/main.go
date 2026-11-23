@@ -33,12 +33,15 @@ func main() {
 	defer stop()
 
 	store := api.NewMemoryStore()
-	deps := api.Deps{Policies: store, Decisions: store}
+	deps := api.Deps{Policies: store, Decisions: store, Writer: store}
 
 	// 有可用 kubeconfig 时才连集群；连不上不阻塞启动，改为在 /healthz 暴露 k8s 依赖不可用。
 	if view, err := startClusterView(ctx); err != nil {
 		log.Printf("集群视图未启用: %v", err)
 	} else {
+		deps.Snapshotter = func(context.Context) (capacity.Snapshot, error) {
+			return view.Snapshot(time.Now())
+		}
 		deps.Checks = map[string]func(context.Context) error{
 			"k8s": func(context.Context) error {
 				if !view.HasSynced() {
@@ -49,13 +52,15 @@ func main() {
 		}
 	}
 
-	// ARBITER_PG_DSN 缺省时不连数据库，M1 阶段允许只跑只读内存视图。
+	// ARBITER_PG_DSN 缺省时不连数据库，此时退化为内存存储（进程内可跑模拟，重启即丢）。
 	if dsn := os.Getenv("ARBITER_PG_DSN"); dsn != "" {
 		pool, err := postgres.New(ctx, dsn)
 		if err != nil {
 			log.Printf("PostgreSQL 未启用: %v", err)
 		} else {
 			defer pool.Close()
+			pg := api.NewPGStore(pool)
+			deps.Policies, deps.Decisions, deps.Writer = pg, pg, pg
 			if deps.Checks == nil {
 				deps.Checks = map[string]func(context.Context) error{}
 			}
