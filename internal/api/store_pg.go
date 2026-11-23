@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
@@ -42,7 +43,31 @@ var (
 	_ DecisionReader = (*PGStore)(nil)
 	_ DecisionWriter = (*PGStore)(nil)
 	_ TenantReader   = (*PGStore)(nil)
+	_ SnapshotWriter = (*PGStore)(nil)
 )
+
+// snapshotDoc 是 capacity_snapshots.payload 的形状，与 db/schema.sql 的版本约束一致。
+type snapshotDoc struct {
+	SchemaVersion int              `json:"schema_version"`
+	Snapshot      capacity.Snapshot `json:"snapshot"`
+}
+
+// SaveSnapshot 幂等写入：同一 hash 已存在则跳过，避免每次模拟都新增一行。
+func (s *PGStore) SaveSnapshot(ctx context.Context, snap capacity.Snapshot, hash string) error {
+	payload, err := json.Marshal(snapshotDoc{SchemaVersion: jsonSchemaVersion, Snapshot: snap})
+	if err != nil {
+		return fmt.Errorf("序列化快照: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO capacity_snapshots (ts, payload, hash)
+		SELECT $1, $2, $3
+		WHERE NOT EXISTS (SELECT 1 FROM capacity_snapshots WHERE hash = $3)`,
+		snap.TakenAt, payload, hash)
+	if err != nil {
+		return fmt.Errorf("写入快照: %w", err)
+	}
+	return nil
+}
 
 // GetTenant 读取租户权重与配额。配额的 cpu / memory 两行分别映射到 Resources，
 // FairShare 取 cpu 行（算法规范中主导份额按 CPU 归一化）；缺少配额行时按"不限"处理。

@@ -33,7 +33,7 @@ func main() {
 	defer stop()
 
 	store := api.NewMemoryStore()
-	deps := api.Deps{Policies: store, Decisions: store, Writer: store}
+	deps := api.Deps{Policies: store, Decisions: store, Writer: store, Snapshots: store}
 
 	// 有可用 kubeconfig 时才连集群；连不上不阻塞启动，改为在 /healthz 暴露 k8s 依赖不可用。
 	if view, err := startClusterView(ctx); err != nil {
@@ -60,7 +60,8 @@ func main() {
 		} else {
 			defer pool.Close()
 			pg := api.NewPGStore(pool)
-			deps.Policies, deps.Decisions, deps.Writer, deps.Tenants = pg, pg, pg, pg
+			deps.Policies, deps.Decisions, deps.Writer = pg, pg, pg
+			deps.Tenants, deps.Snapshots = pg, pg
 			if deps.Checks == nil {
 				deps.Checks = map[string]func(context.Context) error{}
 			}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
@@ -96,12 +97,18 @@ type TenantReader interface {
 	GetTenant(ctx context.Context, id string) (schedcore.TenantState, bool, error)
 }
 
+// SnapshotWriter 负责把决策用的快照留档；相同内容（同 hash）只保留一份。
+type SnapshotWriter interface {
+	SaveSnapshot(ctx context.Context, snap capacity.Snapshot, hash string) error
+}
+
 // MemoryStore 是只读视图的占位实现：没有数据库时不编造数据，默认返回空列表。
 type MemoryStore struct {
 	mu        sync.RWMutex
 	policies  []Policy
 	decisions []PlacementDecision
 	tenants   map[string]schedcore.TenantState
+	snapshots map[string]capacity.Snapshot
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -109,7 +116,22 @@ func NewMemoryStore() *MemoryStore {
 		policies:  make([]Policy, 0),
 		decisions: make([]PlacementDecision, 0),
 		tenants:   make(map[string]schedcore.TenantState),
+		snapshots: make(map[string]capacity.Snapshot),
 	}
+}
+
+func (s *MemoryStore) SaveSnapshot(_ context.Context, snap capacity.Snapshot, hash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshots[hash] = snap
+	return nil
+}
+
+// SnapshotCount 供测试断言留档份数。
+func (s *MemoryStore) SnapshotCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.snapshots)
 }
 
 func (s *MemoryStore) AddPolicy(p Policy) {

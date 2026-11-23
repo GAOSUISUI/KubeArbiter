@@ -52,6 +52,7 @@ func simulateFixture(t *testing.T) (*ginEngine, *MemoryStore) {
 		Decisions: store,
 		Writer:    store,
 		Tenants:   store,
+		Snapshots: store,
 		Snapshotter: func(context.Context) (capacity.Snapshot, error) {
 			return snap, nil
 		},
@@ -113,6 +114,22 @@ func TestSimulatePlacementChoosesIdleNode(t *testing.T) {
 	list, _ := store.ListDecisions(context.Background(), DecisionFilter{})
 	if len(list) != 1 {
 		t.Fatalf("决策应落库 1 条，实际 %d", len(list))
+	}
+	if n := store.SnapshotCount(); n != 1 {
+		t.Fatalf("快照应留档 1 份，实际 %d", n)
+	}
+
+	// 同一状态再模拟一次：快照应按 hash 去重，决策则新增一条。
+	eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "api", "namespace": "default", "replicas": 2,
+		             "requests": {"cpu_milli": 500, "mem_bytes": 536870912}},
+		"policy_id": "`+testPolicyID+`"
+	}`)
+	if n := store.SnapshotCount(); n != 1 {
+		t.Fatalf("相同快照不应重复留档，实际 %d 份", n)
+	}
+	if l, _ := store.ListDecisions(context.Background(), DecisionFilter{}); len(l) != 2 {
+		t.Fatalf("决策应累计 2 条，实际 %d", len(l))
 	}
 }
 

@@ -8,11 +8,17 @@ import (
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 )
 
-// Hash 返回快照的稳定哈希，用于复现与审计。
-// Snapshot 内部字段顺序固定，节点与待调度 Pod 已按名字排序，因此同一份快照内容
-// （含 TakenAt）总是得到同一哈希；快照内容变化即哈希变化。
+// canonicalSnapshot 是参与哈希的字段子集：剔除 TakenAt 这类每次取数都会变的字段，
+// 这样"集群状态没变"就得到同一个哈希，快照去重与审计比对才有意义。
+type canonicalSnapshot struct {
+	Nodes       []capacity.NodeView
+	PendingPods []capacity.PodView
+}
+
+// Hash 返回快照内容的稳定哈希，用于复现与审计。
+// 节点与待调度 Pod 在 View 中已按名字排序，map 由 encoding/json 按键排序，因此结果确定。
 func Hash(snap capacity.Snapshot) (string, error) {
-	b, err := json.Marshal(snap)
+	b, err := json.Marshal(canonicalSnapshot{Nodes: snap.Nodes, PendingPods: snap.PendingPods})
 	if err != nil {
 		return "", err
 	}

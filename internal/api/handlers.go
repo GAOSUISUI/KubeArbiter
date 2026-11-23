@@ -29,6 +29,8 @@ type Deps struct {
 	Writer    DecisionWriter
 	// Tenants 提供租户权重与配额；未接入库时为空，模拟接口按权重 1、无配额兜底。
 	Tenants TenantReader
+	// Snapshots 把决策所用快照留档；为空时跳过留档。
+	Snapshots SnapshotWriter
 	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
 	Snapshotter func(context.Context) (capacity.Snapshot, error)
 	// Checks 为健康检查集合，key 为依赖名（如 "postgres"、"k8s"）。
@@ -260,6 +262,12 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 		if err != nil {
 			writeError(c, errInternal())
 			return
+		}
+		if d.Snapshots != nil {
+			if err := d.Snapshots.SaveSnapshot(ctx, snap, hash); err != nil {
+				writeError(c, errUnavailable())
+				return
+			}
 		}
 
 		// 租户权重与配额来自 tenants / quotas 表；未接入库时按权重 1、无配额兜底。
