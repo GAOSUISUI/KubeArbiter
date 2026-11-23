@@ -14,6 +14,9 @@
 | kubectl | v1.37.2（Kustomize v5.8.1） | 2026-11-22 | `kubectl version --client` → `Client Version: v1.37.2` |
 | Helm | v3.20.0（go1.25.6，GitTreeState=clean） | 2026-11-22 | `helm version` → `version.BuildInfo{Version:"v3.20.0", ...}` |
 | Python | 3.13.17 | 2026-11-22 | `python --version` → `Python 3.13.17` |
+| Kubernetes 集群（kubeadm） | v1.37.2，3 节点 | 2026-11-23 | `kubectl get nodes` → ka-cp1/ka-w1/ka-w2 均 Ready，v1.37.2 |
+| containerd | 2.2.1 | 2026-11-23 | 节点 `CONTAINER-RUNTIME` 列 → `containerd://2.2.1` |
+| Flannel | v0.28.11 | 2026-11-23 | `kubectl -n kube-flannel get ds` → 3/3 READY |
 
 > Helm 说明：winget 默认装到 v4.3.2，与冻结包"Helm 3.x 稳定版"冲突，已卸载并改装 v3.20.0。
 > kubectl/helm 二进制位于 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\...`，当前 shell 的 PATH 需重开后才生效。
@@ -39,6 +42,5 @@
 |---|---|---|
 | Docker Desktop | 当前稳定版 | 用户本轮选择暂不安装；PostgreSQL 16 容器化依赖它 |
 | PostgreSQL 16 | 16.x 镜像 digest | 等待 Docker |
-| Kubernetes 集群（kubeadm） | 与 kubectl 同 minor（1.37.x） | 待创建 3 节点 VM 集群后回填 `kubectl version` |
 | ingress-nginx | 与集群兼容的稳定版 | M2 前回填 `helm list -n ingress-nginx` |
 | Node.js LTS | LTS | M5 前回填 |

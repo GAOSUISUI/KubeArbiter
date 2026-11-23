@@ -33,12 +33,29 @@
 | 已装工具 | VS Code（E:\VSCode）、Git 2.56.1、Go 1.27.4（`C:\Program Files\Go`）、mingw-w64 / gcc 16.2.0（WinLibs，winget 安装） | Docker / kubectl / helm **均未安装**，M1 需用户批准后安装；gcc 用于 `CGO_ENABLED=1 go test -race` |
 | 集群 | 不存在 | 无任何 Kubernetes 资源，无遗留状态 |
 
-> 说明：硬件与磁盘探测为只读结果；软件安装均经用户逐项批准（Git、Go、mingw-w64）。未创建任何虚拟机，未修改集群。若当前 shell 的 PATH 尚未刷新，运行竞态检测需显式前置 gcc 目录：
+> 说明：硬件与磁盘探测为只读结果；软件安装均经用户逐项批准（Git、Go、mingw-w64）。M0 阶段未创建虚拟机；M1 集群实测结果见 2.1。若当前 shell 的 PATH 尚未刷新，运行竞态检测需显式前置 gcc 目录：
 >
 > ```powershell
 > $env:PATH = 'C:\Users\Gracie\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin;' + $env:PATH
 > $env:CGO_ENABLED = '1'; go test -race ./pkg/schedcore/
 > ```
+
+### 2.1 集群基线（M1 实测，2026-11-23）
+
+| 项 | 实测结果 |
+|---|---|
+| 载体 | VMware Workstation 25.0.1，三台 VM 位于 `E:\KubeArbiter-VMs`（ka-cp1 / ka-w1 / ka-w2） |
+| VM 规格 | 每台 4 vCPU / 8 GB / 60 GB 稀疏盘；SCSI LSI Logic、vmxnet3、NAT |
+| OS | Ubuntu 24.04.4 LTS，内核 6.8.0-151-generic，amd64 |
+| 网络 | ka-cp1 `192.168.49.11`、ka-w1 `.12`、ka-w2 `.13`，网关 `192.168.49.2`，netplan 静态配置 |
+| 容器运行时 | containerd 2.2.1；`SystemdCgroup = true`；sandbox 镜像 `registry.aliyuncs.com/google_containers/pause:3.10.2` |
+| Kubernetes | v1.37.2（kubeadm / kubelet / kubectl 均已 `apt-mark hold`），Pod CIDR `10.244.0.0/16` |
+| CNI | Flannel v0.28.11（ghcr.io/flannel-io），kube-flannel 三节点 Pod 均 Running |
+| 节点状态 | 三节点 Ready；冒烟测试 3 副本分别落到 ka-w1 / ka-w2，Pod IP `10.244.1.2`、`10.244.2.2`、`10.244.2.3` |
+| 系统前置 | swap 关闭并注释 `/etc/fstab`；`overlay`、`br_netfilter` 已加载；`net.ipv4.ip_forward=1` |
+| 软件源 | apt 使用 TUNA；k8s 包用 pkgs.k8s.io；镜像用阿里云 `google_containers` |
+| 网络受限实测 | `registry.k8s.io` 被重定向到 `asia-east1-docker.pkg.dev`（连接被拒），`docker.io` 不可达；`ghcr.io`、`quay.io`、`registry.aliyuncs.com` 可达 → 镜像统一走阿里云与 ghcr |
+| 访问方式 | `arbiter` 用户 SSH 公钥登录 + 免密 sudo；kubeconfig 位于 ka-cp1 的 `~/.kube/config`；join token 有效期 24h，过期需 `kubeadm token create --print-join-command` |
 
 ---
 
