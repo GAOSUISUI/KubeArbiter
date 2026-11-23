@@ -30,8 +30,8 @@
 | 磁盘 | Disk0 = 希捷 ST4000NM000B 4TB SATA **HDD**（D:，3726GB）；Disk1 = 联想 2TB **NVMe 4.0**（C: 500GB / 可用 358.5GB，E: 1407GB / 可用约 1.3TB） | 三台 VM 放到 E（与 C 同属一块 NVMe，空间充足且不占用系统盘）；**禁止放 D**（机械盘，etcd fsync 抖动会直接污染实验数据） |
 | 虚拟化 | HypervisorPresent=True（Hyper-V 已启用） | 与 VMware 共存会带来额外调度开销，需用户决定是否关闭 |
 | VMware Workstation | 25.0.1 已安装 | 作为 3 节点集群载体 |
-| 已装工具 | VS Code（E:\VSCode）、Git 2.56.1、Go 1.27.4（`C:\Program Files\Go`）、mingw-w64 / gcc 16.2.0（WinLibs，winget 安装） | Docker / kubectl / helm **均未安装**，M1 需用户批准后安装；gcc 用于 `CGO_ENABLED=1 go test -race` |
-| 集群 | 不存在 | 无任何 Kubernetes 资源，无遗留状态 |
+| 已装工具 | VS Code（E:\VSCode）、Git 2.56.1、Go 1.27.4（`C:\Program Files\Go`）、mingw-w64 / gcc 16.2.0（WinLibs，winget 安装）、kubectl v1.37.2（winget）、Helm v3.20.0（官方 zip，`%LOCALAPPDATA%\Programs\helm`） | Docker 仍未安装，PostgreSQL 16 容器化前需用户批准；gcc 用于 `CGO_ENABLED=1 go test -race` |
+| 集群 | 3 节点 kubeadm 集群（v1.37.2），实测结果见 2.1 | 无遗留实验数据，节点可随时重置 |
 
 > 说明：硬件与磁盘探测为只读结果；软件安装均经用户逐项批准（Git、Go、mingw-w64）。M0 阶段未创建虚拟机；M1 集群实测结果见 2.1。若当前 shell 的 PATH 尚未刷新，运行竞态检测需显式前置 gcc 目录：
 >
