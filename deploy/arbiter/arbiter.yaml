@@ -1,0 +1,155 @@
+# KubeArbiter 控制器侧部署：ServiceAccount / RBAC / Deployment / Service / MutatingWebhookConfiguration。
+# 证书与 caBundle 由 gen-certs.sh 生成并注入，本文件里的 caBundle 是占位值。
+# 应用清单：kubectl apply -f deploy/arbiter/arbiter.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubearbiter
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arbiter
+  namespace: kubearbiter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: arbiter-view
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: arbiter-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: arbiter-view
+subjects:
+  - kind: ServiceAccount
+    name: arbiter
+    namespace: kubearbiter
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arbiter-api
+  namespace: kubearbiter
+  labels:
+    app: arbiter-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: arbiter-api
+  template:
+    metadata:
+      labels:
+        app: arbiter-api
+    spec:
+      serviceAccountName: arbiter
+      # 当前实验集群只有控制平面节点导入了应用镜像（工作节点无 SSH 通道分发），
+      # 因此单副本固定在此；生产部署应改为工作节点 + 反亲和。
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: arbiter-api
+          image: kubearbiter/arbiter-api:0.4.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: webhook
+              containerPort: 9443
+          env:
+            - name: ARBITER_WEBHOOK_ADDR
+              value: ":9443"
+            - name: ARBITER_TLS_CERT
+              value: /tls/tls.crt
+            - name: ARBITER_TLS_KEY
+              value: /tls/tls.key
+            - name: ARBITER_PG_DSN
+              # trust 认证 + 集群内 Service 名，凭据管理留到认证阶段。
+              value: postgres://kubearbiter@postgres.kubearbiter.svc:5432/kubearbiter?sslmode=disable
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: tls
+          secret:
+            secretName: arbiter-webhook-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arbiter-webhook
+  namespace: kubearbiter
+spec:
+  selector:
+    app: arbiter-api
+  ports:
+    - name: https
+      port: 9443
+      targetPort: webhook
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: kubearbiter-pod-placement
+webhooks:
+  - name: pod-placement.kubearbiter.svc
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # 仲裁器自身故障绝不能阻断业务发布：任何异常都放行，交回默认调度器。
+    failurePolicy: Ignore
+    reinvocationPolicy: Never
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        name: arbiter-webhook
+        namespace: kubearbiter
+        path: /webhook/mutate-pods
+        port: 9443
+      caBundle: Cg==
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+    # 只接管显式声明托管的命名空间，集群系统命名空间不受影响。
+    namespaceSelector:
+      matchLabels:
+        arbiter.io/managed: "true"
