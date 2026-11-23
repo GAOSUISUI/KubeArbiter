@@ -253,6 +253,25 @@ func TestSnapshotAggregatesTenantUsage(t *testing.T) {
 	}
 }
 
+func TestNamespaceTenant(t *testing.T) {
+	named := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{TenantLabelKey: "t-a"}},
+	}
+	empty := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-empty", Labels: map[string]string{TenantLabelKey: ""}},
+	}
+	v := newTestView(t, named, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-plain"}}, empty)
+
+	if got, ok := v.NamespaceTenant("team-a"); !ok || got != "t-a" {
+		t.Fatalf("team-a 应归属 t-a，实际 %q/%v", got, ok)
+	}
+	for _, ns := range []string{"team-plain", "team-empty", "missing"} {
+		if got, ok := v.NamespaceTenant(ns); ok {
+			t.Fatalf("%s 不应有租户归属，实际 %q", ns, got)
+		}
+	}
+}
+
 func TestSnapshotOrdersDeterministically(t *testing.T) {
 	v := newTestView(t,
 		testNode("n2"), testNode("n1"),

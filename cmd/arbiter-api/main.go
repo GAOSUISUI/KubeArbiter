@@ -42,6 +42,7 @@ func main() {
 		deps.Snapshotter = func(context.Context) (capacity.Snapshot, error) {
 			return view.Snapshot(time.Now())
 		}
+		deps.TenantOfNamespace = view.NamespaceTenant
 		deps.Checks = map[string]func(context.Context) error{
 			"k8s": func(context.Context) error {
 				if !view.HasSynced() {
@@ -73,9 +74,10 @@ func main() {
 		}
 	}
 
+	router := api.NewRouter(deps)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           api.NewRouter(deps),
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -85,6 +87,26 @@ func main() {
 			log.Fatalf("listen: %v", err)
 		}
 	}()
+
+	// admission webhook 需要 TLS：只有同时提供证书与私钥才启动，端口默认 :9443。
+	if cert, key := os.Getenv("ARBITER_TLS_CERT"), os.Getenv("ARBITER_TLS_KEY"); cert != "" && key != "" {
+		webhookAddr := os.Getenv("ARBITER_WEBHOOK_ADDR")
+		if webhookAddr == "" {
+			webhookAddr = ":9443"
+		}
+		webhookSrv := &http.Server{Addr: webhookAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			log.Printf("arbiter-webhook listening on %s (tls)", webhookAddr)
+			if err := webhookSrv.ListenAndServeTLS(cert, key); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("webhook listen: %v", err)
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = webhookSrv.Shutdown(shutdownCtx)
+		}()
+	}
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

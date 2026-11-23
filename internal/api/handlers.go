@@ -34,6 +34,9 @@ type Deps struct {
 	TenantCatalog TenantLister
 	// Snapshots 把决策所用快照留档；为空时跳过留档。
 	Snapshots SnapshotWriter
+	// TenantOfNamespace 由 informer 缓存解析命名空间上的 arbiter.io/tenant 标签；
+	// 仅 webhook 路径使用，为空时 webhook 直接放行。
+	TenantOfNamespace func(namespace string) (string, bool)
 	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
 	Snapshotter func(context.Context) (capacity.Snapshot, error)
 	// Checks 为健康检查集合，key 为依赖名（如 "postgres"、"k8s"）。
@@ -69,6 +72,9 @@ func NewRouter(d Deps) *gin.Engine {
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
 	v1.POST("/placement/simulate", simulatePlacement(d))
+
+	// 准入 webhook 正式路径走独立端口的 TLS 服务，这里同二进制内也注册一份，便于本地调试与单测。
+	r.POST("/webhook/mutate-pods", webhookMutate(d))
 
 	r.NoRoute(func(c *gin.Context) {
 		writeError(c, errNotFound())

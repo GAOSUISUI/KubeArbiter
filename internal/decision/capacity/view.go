@@ -97,6 +97,16 @@ func (v *View) HasSynced() bool {
 // TenantLabelKey 把命名空间归属到租户；未打标签的命名空间不参与租户用量统计。
 const TenantLabelKey = "arbiter.io/tenant"
 
+// NamespaceTenant 从 informer 缓存读取命名空间的租户归属，供 admission webhook 使用。
+func (v *View) NamespaceTenant(namespace string) (string, bool) {
+	ns, err := v.namespaces.Lister().Get(namespace)
+	if err != nil {
+		return "", false
+	}
+	tenant := ns.Labels[TenantLabelKey]
+	return tenant, tenant != ""
+}
+
 // Snapshot 从本地缓存构造一致性快照。所有字段均为副本，调用方修改不会影响缓存。
 func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 	nodes, err := v.nodes.Lister().List(labels.Everything())
