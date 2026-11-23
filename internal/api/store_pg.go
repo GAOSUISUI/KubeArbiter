@@ -41,7 +41,43 @@ var (
 	_ PolicyReader   = (*PGStore)(nil)
 	_ DecisionReader = (*PGStore)(nil)
 	_ DecisionWriter = (*PGStore)(nil)
+	_ TenantReader   = (*PGStore)(nil)
 )
+
+// GetTenant 读取租户权重与配额。配额的 cpu / memory 两行分别映射到 Resources，
+// FairShare 取 cpu 行（算法规范中主导份额按 CPU 归一化）；缺少配额行时按"不限"处理。
+func (s *PGStore) GetTenant(ctx context.Context, id string) (schedcore.TenantState, bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return schedcore.TenantState{}, false, nil
+	}
+	var (
+		t        schedcore.TenantState
+		weight   float64
+		cpuHard  int64
+		memHard  int64
+		fair     float64
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT t.id::text, t.weight::float8,
+		       coalesce(qc.hard, 0), coalesce(qm.hard, 0), coalesce(qc.fair_share, 0)::float8
+		FROM tenants t
+		LEFT JOIN quotas qc ON qc.tenant_id = t.id AND qc.resource = 'cpu'
+		LEFT JOIN quotas qm ON qm.tenant_id = t.id AND qm.resource = 'memory'
+		WHERE t.id = $1`, id).
+		Scan(&t.ID, &weight, &cpuHard, &memHard, &fair)
+	if err == pgx.ErrNoRows {
+		return schedcore.TenantState{}, false, nil
+	}
+	if err != nil {
+		return schedcore.TenantState{}, false, fmt.Errorf("查询租户: %w", err)
+	}
+	t.Weight = weight
+	t.FairShare = fair
+	if cpuHard > 0 || memHard > 0 {
+		t.Quota = schedcore.Resources{CPUMilli: cpuHard, MemBytes: memHard}
+	}
+	return t, true, nil
+}
 
 func (s *PGStore) ListPolicies(ctx context.Context) ([]Policy, error) {
 	rows, err := s.pool.Query(ctx, `

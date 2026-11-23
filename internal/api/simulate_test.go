@@ -51,6 +51,7 @@ func simulateFixture(t *testing.T) (*ginEngine, *MemoryStore) {
 		Policies:  store,
 		Decisions: store,
 		Writer:    store,
+		Tenants:   store,
 		Snapshotter: func(context.Context) (capacity.Snapshot, error) {
 			return snap, nil
 		},
@@ -165,5 +166,60 @@ func TestSimulateWithoutSnapshotterReturns503(t *testing.T) {
 	}
 	if payload["code"].(float64) != CodeUnavailable {
 		t.Fatalf("期望 50301，实际 %v", payload["code"])
+	}
+}
+
+func TestSimulateTenantQuotaExceeded(t *testing.T) {
+	eng, store := simulateFixture(t)
+	const tenantID = "44444444-4444-4444-4444-444444444444"
+	// 配额 100m，单副本需求 500m：任何节点都不可能通过硬上限。
+	store.AddTenant(schedcore.TenantState{
+		ID:     tenantID,
+		Weight: 2,
+		Quota:  schedcore.Resources{CPUMilli: 100, MemBytes: 1 << 20},
+	})
+
+	rec, payload := eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "api", "namespace": "default", "replicas": 1,
+		             "requests": {"cpu_milli": 500, "mem_bytes": 536870912}},
+		"tenant_id": "`+tenantID+`",
+		"policy_id": "`+testPolicyID+`"
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("配额超限属于可解释的拒绝，应返回 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	data := payload["data"].(map[string]any)
+	if data["status"] != string(schedcore.StatusNoCandidate) {
+		t.Fatalf("状态应为 NO_CANDIDATE，实际 %v", data["status"])
+	}
+	if data["chosen_node"] != nil {
+		t.Fatalf("拒绝时不应有选中节点，实际 %v", data["chosen_node"])
+	}
+	filtered := data["filtered"].([]any)
+	reasons := make([]string, 0, len(filtered))
+	for _, f := range filtered {
+		reasons = append(reasons, f.(map[string]any)["reason"].(string))
+	}
+	for _, r := range reasons {
+		if r != string(schedcore.ReasonTenantQuotaExceeded) {
+			t.Fatalf("过滤原因应全部为 TENANT_QUOTA_EXCEEDED，实际 %v", reasons)
+		}
+	}
+}
+
+func TestSimulateUnknownTenantReturns404(t *testing.T) {
+	eng, _ := simulateFixture(t)
+	rec, payload := eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "api", "namespace": "default", "replicas": 1,
+		             "requests": {"cpu_milli": 100, "mem_bytes": 1048576}},
+		"tenant_id": "55555555-5555-5555-5555-555555555555",
+		"policy_id": "`+testPolicyID+`"
+	}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("未知租户应 404，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	if payload["code"].(float64) != CodeNotFound {
+		t.Fatalf("期望 40401，实际 %v", payload["code"])
 	}
 }

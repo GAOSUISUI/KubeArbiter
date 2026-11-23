@@ -27,6 +27,8 @@ type Deps struct {
 	Policies  PolicyReader
 	Decisions DecisionReader
 	Writer    DecisionWriter
+	// Tenants 提供租户权重与配额；未接入库时为空，模拟接口按权重 1、无配额兜底。
+	Tenants TenantReader
 	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
 	Snapshotter func(context.Context) (capacity.Snapshot, error)
 	// Checks 为健康检查集合，key 为依赖名（如 "postgres"、"k8s"）。
@@ -260,10 +262,23 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			return
 		}
 
-		// 租户权重与配额 M3 才落库；M2 只保证"指定了租户就参与公平性计算"。
+		// 租户权重与配额来自 tenants / quotas 表；未接入库时按权重 1、无配额兜底。
 		tenants := map[string]schedcore.TenantState{}
 		if req.TenantID != nil {
-			tenants[*req.TenantID] = schedcore.TenantState{ID: *req.TenantID, Weight: 1}
+			state := schedcore.TenantState{ID: *req.TenantID, Weight: 1}
+			if d.Tenants != nil {
+				loaded, ok, err := d.Tenants.GetTenant(ctx, *req.TenantID)
+				if err != nil {
+					writeError(c, errUnavailable())
+					return
+				}
+				if !ok {
+					writeError(c, errNotFound())
+					return
+				}
+				state = loaded
+			}
+			tenants[state.ID] = state
 		}
 
 		out, err := schedcore.Place(placement.BuildContext(snap, tenants), toSchedWorkload(req), policy.Weights)

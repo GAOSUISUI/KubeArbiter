@@ -91,17 +91,24 @@ type DecisionWriter interface {
 	CreateDecision(ctx context.Context, d PlacementDecision) (PlacementDecision, error)
 }
 
+// TenantReader 提供租户权重与配额，用于公平性评分与硬上限过滤。
+type TenantReader interface {
+	GetTenant(ctx context.Context, id string) (schedcore.TenantState, bool, error)
+}
+
 // MemoryStore 是只读视图的占位实现：没有数据库时不编造数据，默认返回空列表。
 type MemoryStore struct {
 	mu        sync.RWMutex
 	policies  []Policy
 	decisions []PlacementDecision
+	tenants   map[string]schedcore.TenantState
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		policies:  make([]Policy, 0),
 		decisions: make([]PlacementDecision, 0),
+		tenants:   make(map[string]schedcore.TenantState),
 	}
 }
 
@@ -109,6 +116,19 @@ func (s *MemoryStore) AddPolicy(p Policy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.policies = append(s.policies, p)
+}
+
+func (s *MemoryStore) AddTenant(t schedcore.TenantState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tenants[t.ID] = t
+}
+
+func (s *MemoryStore) GetTenant(_ context.Context, id string) (schedcore.TenantState, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.tenants[id]
+	return t, ok, nil
 }
 
 func (s *MemoryStore) AddDecision(d PlacementDecision) {
