@@ -18,6 +18,7 @@ import (
 
 	"github.com/kubearbiter/kubearbiter/internal/api"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
+	"github.com/kubearbiter/kubearbiter/internal/store/postgres"
 )
 
 func main() {
@@ -45,6 +46,24 @@ func main() {
 				}
 				return nil
 			},
+		}
+	}
+
+	// ARBITER_PG_DSN 缺省时不连数据库，M1 阶段允许只跑只读内存视图。
+	if dsn := os.Getenv("ARBITER_PG_DSN"); dsn != "" {
+		pool, err := postgres.New(ctx, dsn)
+		if err != nil {
+			log.Printf("PostgreSQL 未启用: %v", err)
+		} else {
+			defer pool.Close()
+			if deps.Checks == nil {
+				deps.Checks = map[string]func(context.Context) error{}
+			}
+			deps.Checks["postgres"] = func(ctx context.Context) error {
+				pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				return pool.Ping(pingCtx)
+			}
 		}
 	}
 

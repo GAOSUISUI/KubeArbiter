@@ -29,6 +29,7 @@
 | `github.com/gin-gonic/gin` | v1.10.1 | `go list -m github.com/gin-gonic/gin` |
 | `github.com/google/uuid` | v1.6.0 | `go list -m github.com/google/uuid` |
 | `k8s.io/client-go` | v0.37.2 | `go list -m k8s.io/client-go` |
+| `github.com/jackc/pgx/v5` | v5.13.0 | `go list -m github.com/jackc/pgx/v5` |
 | `k8s.io/api` | v0.37.2 | `go list -m k8s.io/api` |
 | `k8s.io/apimachinery` | v0.37.2 | `go list -m k8s.io/apimachinery` |
 
