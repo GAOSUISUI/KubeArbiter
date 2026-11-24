@@ -93,8 +93,8 @@ func Place(ctx ClusterContext, wl Workload, w Weights) (Decision, error) {
 		}
 	}
 
-	// 租户公平份额缺失时只告警一次，评分维度按 0 处理。
-	if wl.TenantID != "" {
+	// 基线模式依赖 fair_share；DRF 模式用权重份额做目标，不需要该字段。
+	if wl.TenantID != "" && ctx.FairMode.orDefault() == FairModeWeightedShare {
 		if ts, ok := ctx.Tenants[wl.TenantID]; ok && ts.FairShare <= 0 {
 			decision.Warnings = append(decision.Warnings, WarnFairShareMissing)
 		}
@@ -337,18 +337,8 @@ func scoreNode(ctx ClusterContext, wl Workload, n Node, w Weights, totalWeight f
 	}
 	sLoad := 1 - clamp01(math.Max(usageCPU, usageMem))
 
-	// 无租户上下文时不施加公平压力，记为满分，避免对无租户场景产生系统性惩罚。
-	sFair := 1.0
-	if wl.TenantID != "" {
-		if ts, ok := ctx.Tenants[wl.TenantID]; ok {
-			if ts.FairShare <= 0 {
-				sFair = 0
-			} else {
-				after := ts.Allocated.Add(wl.Demand())
-				sFair = 1 - clamp01(dominantShare(after, ctx.Capacity)/ts.FairShare)
-			}
-		}
-	}
+	// 公平维度：默认 DRF 节点级试算，基线模式退化为全局份额比。
+	sFair := fairScore(ctx, wl, n)
 
 	var unusableCPU, unusableMem float64
 	if residual.CPUMilli < ctx.MinPendingPod.CPUMilli {
@@ -384,4 +374,106 @@ func scoreNode(ctx ClusterContext, wl Workload, n Node, w Weights, totalWeight f
 
 func round4(v float64) float64 {
 	return math.Round(v*1e4) / 1e4
+}
+
+// fairScore 计算公平维度 s_fair。
+//
+// DRF 模式（默认）对每个候选节点单独做一次加权 DRF 试算：需求集为"本租户
+// （含本次放置需求）+ 该节点上其他租户"，可竞争容量为该节点扣除系统占用后的余量，
+// 返回本租户需求被满足的比例。节点上已有该租户的 pod 时满足比例下降，
+// 于是 s_fair 随节点变化，真正参与排序——这一步修掉了基线算法只产出全局常量的缺陷。
+func fairScore(ctx ClusterContext, wl Workload, n Node) float64 {
+	if wl.TenantID == "" {
+		return 1.0
+	}
+	ts, ok := ctx.Tenants[wl.TenantID]
+	if !ok {
+		return 1.0
+	}
+	if ctx.FairMode.orDefault() == FairModeWeightedShare {
+		if ts.FairShare <= 0 {
+			return 0
+		}
+		after := ts.Allocated.Add(wl.Demand())
+		return 1 - clamp01(dominantShare(after, ctx.Capacity)/ts.FairShare)
+	}
+	return drfNodeScore(ctx, wl, n, ts)
+}
+
+// drfNodeScore 在单个节点上执行加权 DRF 仲裁，把目标租户分到的主导份额
+// 与其权重目标对比：份额接近或低于目标得高分，超出目标得低分。
+func drfNodeScore(ctx ClusterContext, wl Workload, n Node, ts TenantState) float64 {
+	want := n.TenantUsage[wl.TenantID].Add(wl.Demand())
+	if want.IsZero() {
+		return 1
+	}
+
+	// 可竞争容量 = allocatable − 非租户 pod 占用；租户之间只争这部分资源。
+	var tenantSum Resources
+	for _, u := range n.TenantUsage {
+		tenantSum = tenantSum.Add(u)
+	}
+	available := nonNegative(n.Allocatable.Sub(nonNegative(n.Requested.Sub(tenantSum))))
+	if available.IsZero() {
+		return 0
+	}
+
+	ids := make([]string, 0, len(n.TenantUsage)+1)
+	seen := make(map[string]bool, len(n.TenantUsage)+1)
+	for id := range n.TenantUsage {
+		ids = append(ids, id)
+		seen[id] = true
+	}
+	if !seen[wl.TenantID] {
+		ids = append(ids, wl.TenantID)
+	}
+	// 排序保证同一快照多次运行得到同一分配，不受 map 迭代顺序影响。
+	sort.Strings(ids)
+
+	demands := make([]TenantDemand, 0, len(ids))
+	for _, id := range ids {
+		weight := 1.0
+		if t, ok := ctx.Tenants[id]; ok && t.Weight > 0 {
+			weight = t.Weight
+		}
+		usage := n.TenantUsage[id]
+		if id == wl.TenantID {
+			usage = want
+		}
+		demands = append(demands, TenantDemand{ID: id, Weight: weight, Demand: usage})
+	}
+
+	plan, err := Arbitrate(available, demands, AllocatorDRF)
+	if err != nil {
+		return 0
+	}
+	var got Resources
+	for _, a := range plan.Allocations {
+		if a.TenantID == wl.TenantID {
+			got = a.Allocated
+			break
+		}
+	}
+
+	// 权重目标：该租户权重 / 全部租户权重之和。
+	weight := ts.Weight
+	if weight <= 0 {
+		weight = 1
+	}
+	totalWeight := 0.0
+	for _, t := range ctx.Tenants {
+		if t.Weight > 0 {
+			totalWeight += t.Weight
+		} else {
+			totalWeight++
+		}
+	}
+	if totalWeight <= 0 {
+		return 0
+	}
+	target := weight / totalWeight
+	if target <= 0 {
+		return 0
+	}
+	return 1 - clamp01(dominantShare(got, available)/target)
 }

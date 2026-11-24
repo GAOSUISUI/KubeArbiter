@@ -124,10 +124,19 @@ func listPolicies(d Deps) gin.HandlerFunc {
 // createPolicy / updatePolicy / deletePolicy 实现策略 CRUD。
 // 权重必须走 Validate()；ErrNotFound 映射 404，其它存储错误映射 503。
 type policyRequest struct {
-	Name      string             `json:"name"`
-	Strategy  schedcore.Strategy `json:"strategy"`
-	Weights   schedcore.Weights  `json:"weights"`
-	IsDefault bool               `json:"is_default"`
+	Name         string             `json:"name"`
+	Strategy     schedcore.Strategy `json:"strategy"`
+	Weights      schedcore.Weights  `json:"weights"`
+	FairnessMode schedcore.FairMode `json:"fairness_mode"`
+	IsDefault    bool               `json:"is_default"`
+}
+
+// normalizeFairnessMode 把空值统一成 DRF，避免存储层与响应里出现空字符串。
+func normalizeFairnessMode(m schedcore.FairMode) schedcore.FairMode {
+	if m == "" {
+		return schedcore.FairModeDRF
+	}
+	return m
 }
 
 func createPolicy(d Deps) gin.HandlerFunc {
@@ -153,11 +162,16 @@ func createPolicy(d Deps) gin.HandlerFunc {
 			writeError(c, errInvalidArgument(ErrorDetail{Field: "strategy", Reason: err.Error()}))
 			return
 		}
+		if err := req.FairnessMode.Validate(); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "fairness_mode", Reason: err.Error()}))
+			return
+		}
 		p, err := d.PolicyWriter.CreatePolicy(c.Request.Context(), Policy{
-			Name:      req.Name,
-			Strategy:  req.Strategy,
-			Weights:   req.Weights,
-			IsDefault: req.IsDefault,
+			Name:         req.Name,
+			Strategy:     req.Strategy,
+			Weights:      req.Weights,
+			FairnessMode: normalizeFairnessMode(req.FairnessMode),
+			IsDefault:    req.IsDefault,
 		})
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -187,12 +201,17 @@ func updatePolicy(d Deps) gin.HandlerFunc {
 			writeError(c, errBusinessRejected("POLICY_WEIGHTS_INVALID", ErrorDetail{Field: "weights", Reason: err.Error()}))
 			return
 		}
+		if err := req.FairnessMode.Validate(); err != nil {
+			writeError(c, errInvalidArgument(ErrorDetail{Field: "fairness_mode", Reason: err.Error()}))
+			return
+		}
 		p, err := d.PolicyWriter.UpdatePolicy(c.Request.Context(), Policy{
-			ID:        id,
-			Name:      req.Name,
-			Strategy:  req.Strategy,
-			Weights:   req.Weights,
-			IsDefault: req.IsDefault,
+			ID:           id,
+			Name:         req.Name,
+			Strategy:     req.Strategy,
+			Weights:      req.Weights,
+			FairnessMode: normalizeFairnessMode(req.FairnessMode),
+			IsDefault:    req.IsDefault,
 		})
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -419,7 +438,8 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			tenants[state.ID] = state
 		}
 
-		clusterCtx := placement.BuildContext(snap, tenants)
+		fairnessMode := normalizeFairnessMode(policy.FairnessMode)
+		clusterCtx := placement.BuildContext(snap, tenants, fairnessMode)
 		out, err := schedcore.Place(clusterCtx, toSchedWorkload(req), weights)
 		if err != nil {
 			writeError(c, errBusinessRejected("PLACEMENT_REJECTED", ErrorDetail{Field: "workload", Reason: err.Error()}))
@@ -439,6 +459,7 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			Evidence: map[string]any{
 				"schema_version":      1,
 				"weights":             weights,
+				"fairness_mode":       fairnessMode,
 				"policy_id":           policy.ID,
 				"metrics_known":       clusterCtx.MetricsKnown,
 				"metrics_age_seconds": clusterCtx.MetricsAgeSeconds,

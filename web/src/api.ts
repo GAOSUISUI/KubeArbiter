@@ -14,6 +14,8 @@ export interface Policy {
   name: string
   strategy: string
   weights: Weights
+  // DRF：节点级 DRF 试算；WEIGHTED_SHARE：M5 基线算法（用于 A/B 对比）。
+  fairness_mode: string
   is_default: boolean
 }
 

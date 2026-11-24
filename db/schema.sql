@@ -47,6 +47,8 @@ CREATE TABLE policies (
     strategy    varchar(16) NOT NULL
                 CHECK (strategy IN ('BALANCED','BIN_PACK','FAIR_SHARE','LOAD_AWARE')),
     weights     jsonb       NOT NULL,
+    fairness_mode varchar(16) NOT NULL DEFAULT 'DRF'
+                CHECK (fairness_mode IN ('DRF','WEIGHTED_SHARE')),
     is_default  boolean     NOT NULL DEFAULT false,
     created_at  timestamptz NOT NULL DEFAULT now(),
     updated_at  timestamptz NOT NULL DEFAULT now(),

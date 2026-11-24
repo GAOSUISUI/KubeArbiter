@@ -247,6 +247,8 @@ func TestPlaceMetricsMissing(t *testing.T) {
 
 func TestPlaceFairShareMissing(t *testing.T) {
 	ctx := baseCtx(baseNode("n1"))
+	// 该用例验证基线算法的降级行为，需要显式切回 WEIGHTED_SHARE。
+	ctx.FairMode = FairModeWeightedShare
 	ctx.Tenants["t1"] = TenantState{ID: "t1", Weight: 1, FairShare: 0}
 
 	decision, err := Place(ctx, Workload{
@@ -446,5 +448,105 @@ func TestTolerated(t *testing.T) {
 				t.Errorf("tolerated = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// sFairOf 取出某节点的 s_fair 子分。
+func sFairOf(t *testing.T, d Decision, node string) float64 {
+	t.Helper()
+	for _, s := range d.Scores {
+		if s.Node == node {
+			return s.Breakdown["s_fair"]
+		}
+	}
+	t.Fatalf("节点 %s 不在评分结果中: %+v", node, d.Scores)
+	return 0
+}
+
+// TestPlaceDRFPrefersNodeWithLowerTenantShare 验证 DRF 公平维度随节点变化：
+// 租户已在 node-a 占用大量资源时，公平维度把决策导向 node-b；基线模式则产出与节点无关的常量。
+func TestPlaceDRFPrefersNodeWithLowerTenantShare(t *testing.T) {
+	busy := baseNode("node-a")
+	busy.Requested = Resources{CPUMilli: 3500, MemBytes: 7 * gi}
+	busy.TenantUsage = map[string]Resources{"t1": {CPUMilli: 3500, MemBytes: 7 * gi}}
+	idle := baseNode("node-b")
+	idle.Requested = Resources{}
+
+	wl := Workload{TenantID: "t1", Replicas: 1, Requests: Resources{CPUMilli: 200, MemBytes: 256 << 20}}
+	fairOnly := Weights{Fair: 1}
+
+	drfCtx := baseCtx(busy, idle)
+	drfCtx.Tenants["t1"] = TenantState{ID: "t1", Weight: 1}
+
+	drfDecision, err := Place(drfCtx, wl, fairOnly)
+	if err != nil {
+		t.Fatalf("Place 返回错误: %v", err)
+	}
+	if drfDecision.ChosenNode != "node-b" {
+		t.Fatalf("DRF 应导向占用更少的 node-b，实际 %s", drfDecision.ChosenNode)
+	}
+	busyFair := sFairOf(t, drfDecision, "node-a")
+	idleFair := sFairOf(t, drfDecision, "node-b")
+	if idleFair <= busyFair {
+		t.Fatalf("空闲节点 s_fair(%.4f) 应高于忙碌节点(%.4f)", idleFair, busyFair)
+	}
+	// 单租户时权重目标为 100%：忙碌节点份额 0.925 → 0.075；空闲节点份额 0.05 → 0.95。
+	approx(t, busyFair, 0.075, 1e-4, "忙碌节点 s_fair")
+	approx(t, idleFair, 0.95, 1e-4, "空闲节点 s_fair")
+
+	// 基线模式：s_fair 只依赖全局份额，两节点相同，按名字平局落到 node-a。
+	baseFairCtx := baseCtx(busy, idle)
+	baseFairCtx.FairMode = FairModeWeightedShare
+	baseFairCtx.Tenants["t1"] = TenantState{
+		ID: "t1", Weight: 1, FairShare: 0.5,
+		Allocated: Resources{CPUMilli: 3500, MemBytes: 7 * gi},
+	}
+	baseDecision, err := Place(baseFairCtx, wl, fairOnly)
+	if err != nil {
+		t.Fatalf("基线 Place 返回错误: %v", err)
+	}
+	if baseDecision.ChosenNode != "node-a" {
+		t.Fatalf("基线模式两节点同分，应按名字落到 node-a，实际 %s", baseDecision.ChosenNode)
+	}
+	approx(t, sFairOf(t, baseDecision, "node-a"), sFairOf(t, baseDecision, "node-b"), 1e-9, "基线 s_fair")
+}
+
+// TestPlaceDRFDeterministic 验证多租户场景下重复执行结果一致（不依赖 map 迭代顺序）。
+func TestPlaceDRFDeterministic(t *testing.T) {
+	busy := baseNode("node-a")
+	busy.TenantUsage = map[string]Resources{
+		"t1": {CPUMilli: 600, MemBytes: 512 << 20},
+		"t2": {CPUMilli: 800, MemBytes: 1 * gi},
+		"t3": {CPUMilli: 400, MemBytes: 1 * gi},
+	}
+	idle := baseNode("node-b")
+	idle.TenantUsage = map[string]Resources{"t2": {CPUMilli: 100, MemBytes: 256 << 20}}
+
+	ctx := baseCtx(busy, idle)
+	ctx.Tenants["t1"] = TenantState{ID: "t1", Weight: 2}
+	ctx.Tenants["t2"] = TenantState{ID: "t2", Weight: 1}
+	ctx.Tenants["t3"] = TenantState{ID: "t3", Weight: 1}
+
+	wl := Workload{TenantID: "t1", Replicas: 1, Requests: Resources{CPUMilli: 300, MemBytes: 128 << 20}}
+	weights := balancedWeights(t)
+
+	first, err := Place(ctx, wl, weights)
+	if err != nil {
+		t.Fatalf("Place 返回错误: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		again, err := Place(ctx, wl, weights)
+		if err != nil {
+			t.Fatalf("第 %d 次 Place 返回错误: %v", i, err)
+		}
+		if again.ChosenNode != first.ChosenNode {
+			t.Fatalf("第 %d 次选中节点不一致: %s vs %s", i, again.ChosenNode, first.ChosenNode)
+		}
+		for j := range again.Scores {
+			if again.Scores[j].Node != first.Scores[j].Node ||
+				math.Abs(again.Scores[j].Score-first.Scores[j].Score) > 1e-9 {
+				t.Fatalf("第 %d 次评分不一致: %+v vs %+v", i, again.Scores[j], first.Scores[j])
+			}
+		}
 	}
 }

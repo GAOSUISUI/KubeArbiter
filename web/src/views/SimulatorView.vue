@@ -32,7 +32,7 @@
             策略
             <select v-model="policyId">
               <option v-for="p in policies" :key="p.id" :value="p.id">
-                {{ p.name }} · {{ p.strategy }}
+                {{ p.name }} · {{ p.strategy }} · {{ p.fairness_mode === 'WEIGHTED_SHARE' ? '基线份额' : 'DRF' }}
               </option>
             </select>
           </label>
@@ -301,6 +301,7 @@ async function saveAsPolicy() {
       name: saveName.value.trim(),
       strategy: selectedPolicy.value.strategy,
       weights: normalized(),
+      fairness_mode: selectedPolicy.value.fairness_mode || 'DRF',
       is_default: false
     })
     saveMsg.value = `已保存：${created.name}`

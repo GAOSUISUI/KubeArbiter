@@ -138,7 +138,7 @@ func (s *PGStore) GetTenant(ctx context.Context, id string) (schedcore.TenantSta
 
 func (s *PGStore) ListPolicies(ctx context.Context) ([]Policy, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id::text, name, strategy, weights, is_default
+		SELECT id::text, name, strategy, weights, COALESCE(fairness_mode,'DRF'), is_default
 		FROM policies ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("查询策略: %w", err)
@@ -148,14 +148,16 @@ func (s *PGStore) ListPolicies(ctx context.Context) ([]Policy, error) {
 	out := make([]Policy, 0, 4)
 	for rows.Next() {
 		var (
-			p       Policy
+			p        Policy
 			strategy string
-			raw     []byte
+			fairMode string
+			raw      []byte
 		)
-		if err := rows.Scan(&p.ID, &p.Name, &strategy, &raw, &p.IsDefault); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &strategy, &raw, &fairMode, &p.IsDefault); err != nil {
 			return nil, fmt.Errorf("扫描策略: %w", err)
 		}
 		p.Strategy = schedcore.Strategy(strategy)
+		p.FairnessMode = schedcore.FairMode(fairMode)
 		if p.Weights, err = decodeWeights(raw); err != nil {
 			return nil, err
 		}
@@ -171,12 +173,13 @@ func (s *PGStore) GetPolicy(ctx context.Context, id string) (Policy, bool, error
 	var (
 		p        Policy
 		strategy string
+		fairMode string
 		raw      []byte
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT id::text, name, strategy, weights, is_default
+		SELECT id::text, name, strategy, weights, COALESCE(fairness_mode,'DRF'), is_default
 		FROM policies WHERE id = $1`, id).
-		Scan(&p.ID, &p.Name, &strategy, &raw, &p.IsDefault)
+		Scan(&p.ID, &p.Name, &strategy, &raw, &fairMode, &p.IsDefault)
 	if err == pgx.ErrNoRows {
 		return Policy{}, false, nil
 	}
@@ -184,6 +187,7 @@ func (s *PGStore) GetPolicy(ctx context.Context, id string) (Policy, bool, error
 		return Policy{}, false, fmt.Errorf("查询策略: %w", err)
 	}
 	p.Strategy = schedcore.Strategy(strategy)
+	p.FairnessMode = schedcore.FairMode(fairMode)
 	if p.Weights, err = decodeWeights(raw); err != nil {
 		return Policy{}, false, err
 	}
@@ -349,11 +353,16 @@ func (s *PGStore) CreatePolicy(ctx context.Context, p Policy) (Policy, error) {
 	if p.ID == "" {
 		p.ID = uuid.NewString()
 	}
+	mode := p.FairnessMode
+	if mode == "" {
+		mode = schedcore.FairModeDRF
+	}
+	p.FairnessMode = mode
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO policies (id, name, strategy, weights, is_default)
-		VALUES ($1, $2, $3, $4::jsonb, $5)
+		INSERT INTO policies (id, name, strategy, weights, fairness_mode, is_default)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6)
 		ON CONFLICT DO NOTHING`,
-		p.ID, p.Name, string(p.Strategy), raw, p.IsDefault)
+		p.ID, p.Name, string(p.Strategy), raw, string(mode), p.IsDefault)
 	if err != nil {
 		return Policy{}, fmt.Errorf("写入策略: %w", err)
 	}
@@ -368,10 +377,15 @@ func (s *PGStore) UpdatePolicy(ctx context.Context, p Policy) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("编码策略权重: %w", err)
 	}
+	mode := p.FairnessMode
+	if mode == "" {
+		mode = schedcore.FairModeDRF
+	}
+	p.FairnessMode = mode
 	ct, err := s.pool.Exec(ctx, `
-		UPDATE policies SET name=$2, strategy=$3, weights=$4::jsonb, is_default=$5, updated_at=now()
+		UPDATE policies SET name=$2, strategy=$3, weights=$4::jsonb, fairness_mode=$5, is_default=$6, updated_at=now()
 		WHERE id=$1`,
-		p.ID, p.Name, string(p.Strategy), raw, p.IsDefault)
+		p.ID, p.Name, string(p.Strategy), raw, string(mode), p.IsDefault)
 	if err != nil {
 		return Policy{}, fmt.Errorf("更新策略: %w", err)
 	}

@@ -31,7 +31,7 @@ func TestBuildContextMapsNodesAndCapacity(t *testing.T) {
 		},
 	}
 
-	ctx := BuildContext(snap, nil)
+	ctx := BuildContext(snap, nil, schedcore.FairModeDRF)
 
 	if len(ctx.Nodes) != 3 {
 		t.Fatalf("节点数应为 3，实际 %d", len(ctx.Nodes))
@@ -65,7 +65,7 @@ func TestBuildContextMinPendingPod(t *testing.T) {
 		},
 	}
 
-	ctx := BuildContext(snap, nil)
+	ctx := BuildContext(snap, nil, schedcore.FairModeDRF)
 
 	want := schedcore.Resources{CPUMilli: 200, MemBytes: 1 << 30}
 	if ctx.MinPendingPod != want {
@@ -74,7 +74,7 @@ func TestBuildContextMinPendingPod(t *testing.T) {
 }
 
 func TestBuildContextEmptySnapshot(t *testing.T) {
-	ctx := BuildContext(capacity.Snapshot{}, nil)
+	ctx := BuildContext(capacity.Snapshot{}, nil, schedcore.FairModeDRF)
 	if len(ctx.Nodes) != 0 || !ctx.Capacity.IsZero() || !ctx.MinPendingPod.IsZero() {
 		t.Fatalf("空快照应产生零值上下文，实际 %+v", ctx)
 	}
@@ -84,7 +84,7 @@ func TestBuildContextKeepsTenants(t *testing.T) {
 	tenants := map[string]schedcore.TenantState{
 		"t1": {ID: "t1", Weight: 2, FairShare: 0.4},
 	}
-	ctx := BuildContext(capacity.Snapshot{}, tenants)
+	ctx := BuildContext(capacity.Snapshot{}, tenants, schedcore.FairModeDRF)
 	if ctx.Tenants["t1"].Weight != 2 {
 		t.Fatalf("租户状态应原样透传，实际 %+v", ctx.Tenants)
 	}
@@ -103,7 +103,7 @@ func TestBuildContextFillsAllocatedAndFairShare(t *testing.T) {
 	// 只显式提供 t-a；t-b 需要从用量里补出来，否则权重总和偏小。
 	ctx := BuildContext(snap, map[string]schedcore.TenantState{
 		"t-a": {ID: "t-a", Weight: 3},
-	})
+	}, schedcore.FairModeDRF)
 
 	a := ctx.Tenants["t-a"]
 	if a.Allocated.CPUMilli != 500 {
@@ -131,7 +131,7 @@ func TestBuildContextUsesSnapshotMetrics(t *testing.T) {
 		TakenAt:   taken,
 		MetricsAt: taken.Add(-5 * time.Second),
 		Nodes:     []capacity.NodeView{n},
-	}, nil)
+	}, nil, schedcore.FairModeDRF)
 
 	if !ctx.MetricsKnown {
 		t.Fatal("快照带 MetricsAt 时应视为指标已知")
@@ -150,7 +150,7 @@ func TestBuildContextClampsNegativeMetricsAge(t *testing.T) {
 	ctx := BuildContext(capacity.Snapshot{
 		TakenAt:   taken,
 		MetricsAt: taken.Add(2 * time.Second),
-	}, nil)
+	}, nil, schedcore.FairModeDRF)
 
 	if !ctx.MetricsKnown || ctx.MetricsAgeSeconds != 0 {
 		t.Fatalf("负年龄应归零，实际 known=%v age=%v", ctx.MetricsKnown, ctx.MetricsAgeSeconds)

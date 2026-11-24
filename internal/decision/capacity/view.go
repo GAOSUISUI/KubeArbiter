@@ -57,6 +57,8 @@ type NodeView struct {
 	Taints     []schedcore.Taint
 	HostPorts  map[int32]string
 	Topology   map[string]string
+	// TenantUsage 是该节点上按命名空间租户标签聚合的 request 之和，供节点级 DRF 试算使用。
+	TenantUsage map[string]schedcore.Resources
 }
 
 // PodView 只保留调度决策需要的字段，避免把完整 Pod 对象长期留在内存里。
@@ -168,6 +170,7 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 			Taints:        convertTaints(node.Spec.Taints),
 			HostPorts:     make(map[int32]string),
 			Topology:      nodeTopology(node),
+			TenantUsage:   make(map[string]schedcore.Resources),
 		}
 		// 指标可能缺某个节点（如 kubelet 暂不可达）：只标记该节点未知，整个快照仍可用。
 		if v.metrics != nil {
@@ -208,6 +211,7 @@ func (v *View) Snapshot(now time.Time) (Snapshot, error) {
 		// 已调度 Pod 按所属命名空间的租户标签累计用量；未归属租户的资源不计入公平性。
 		if tenant := tenantByNS[pod.Namespace]; tenant != "" {
 			out.TenantUsage[tenant] = out.TenantUsage[tenant].Add(pv.Requests)
+			nv.TenantUsage[tenant] = nv.TenantUsage[tenant].Add(pv.Requests)
 		}
 		for _, port := range pv.HostPorts {
 			if _, taken := nv.HostPorts[port]; !taken {

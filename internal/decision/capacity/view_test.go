@@ -251,6 +251,13 @@ func TestSnapshotAggregatesTenantUsage(t *testing.T) {
 	if len(snap.TenantUsage) != 1 {
 		t.Fatalf("只有打了租户标签的命名空间才计入，实际 %+v", snap.TenantUsage)
 	}
+	if len(snap.Nodes) != 1 {
+		t.Fatalf("应有 1 个节点，实际 %d", len(snap.Nodes))
+	}
+	nodeUsage := snap.Nodes[0].TenantUsage["t-a"]
+	if nodeUsage.CPUMilli != 750 || nodeUsage.MemBytes != 1536<<20 {
+		t.Fatalf("节点级 t-a 用量应为 750m/1.5Gi，实际 %d/%d", nodeUsage.CPUMilli, nodeUsage.MemBytes)
+	}
 }
 
 func TestNamespaceTenant(t *testing.T) {

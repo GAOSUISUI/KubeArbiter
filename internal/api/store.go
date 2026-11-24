@@ -19,11 +19,12 @@ var ErrNotFound = errors.New("record not found")
 // Policy 对应 openapi.yaml 的 Policy。策略权重直接复用 schedcore.Weights，
 // 避免 API 层与决策核各定义一份七维权重后悄悄漂移。
 type Policy struct {
-	ID        string             `json:"id"`
-	Name      string             `json:"name"`
-	Strategy  schedcore.Strategy `json:"strategy"`
-	Weights   schedcore.Weights  `json:"weights"`
-	IsDefault bool               `json:"is_default"`
+	ID           string             `json:"id"`
+	Name         string             `json:"name"`
+	Strategy     schedcore.Strategy `json:"strategy"`
+	Weights      schedcore.Weights  `json:"weights"`
+	FairnessMode schedcore.FairMode `json:"fairness_mode"`
+	IsDefault    bool               `json:"is_default"`
 }
 
 // WorkloadSpec 对应 openapi.yaml 的 WorkloadSpec（只保留 API 需要的字段）。

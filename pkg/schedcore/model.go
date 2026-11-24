@@ -59,6 +59,8 @@ type Node struct {
 	HostPorts map[int32]string
 	// Topology 记录拓扑域，如 {"zone": "z1", "kubernetes.io/hostname": "w1"}。
 	Topology map[string]string
+	// TenantUsage 是该节点上按租户聚合的已分配资源，DRF 试算的输入。
+	TenantUsage map[string]Resources
 }
 
 type Toleration struct {
@@ -112,6 +114,38 @@ type ClusterContext struct {
 	MetricsAgeSeconds float64
 	// MetricsKnown 为 false 表示完全取不到指标。
 	MetricsKnown bool
+	// FairMode 决定公平维度 s_fair 的计算方式；零值按 DRF 处理。
+	FairMode FairMode
+}
+
+// FairMode 决定公平维度 s_fair 的计算方式。
+type FairMode string
+
+const (
+	// FairModeDRF 在候选节点上做一次加权 DRF 仲裁，以该租户需求的满足比例作为 s_fair。
+	// 节点上已有该租户的用量时得分会下降，从而把租户分散到更"干净"的节点。
+	FairModeDRF FairMode = "DRF"
+	// FairModeWeightedShare 是 M5 之前的基线算法：用租户全局主导份额除以目标份额，
+	// 结果与候选节点无关，仅作为 A/B 对比的对照组保留。
+	FairModeWeightedShare FairMode = "WEIGHTED_SHARE"
+)
+
+// Validate 校验公平模式取值；空值视为 DRF。
+func (m FairMode) Validate() error {
+	switch m {
+	case "", FairModeDRF, FairModeWeightedShare:
+		return nil
+	default:
+		return fmt.Errorf("非法公平模式 %q（允许 DRF/WEIGHTED_SHARE）", m)
+	}
+}
+
+// orDefault 返回生效模式，空值回落为 DRF。
+func (m FairMode) orDefault() FairMode {
+	if m == "" {
+		return FairModeDRF
+	}
+	return m
 }
 
 type TenantState struct {

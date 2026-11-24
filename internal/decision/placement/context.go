@@ -11,7 +11,8 @@ import (
 // 指标新鲜度由快照里的 MetricsAt 决定：零值表示完全取不到指标，此时
 // MetricsKnown=false，决策核会降权 load 维度并给出 METRICS_MISSING 警告，
 // 而不是臆造数值。单节点缺指标只影响该节点的 UsageKnown。
-func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantState) schedcore.ClusterContext {
+// fairMode 来自策略，空值由决策核回落为 DRF。
+func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantState, fairMode schedcore.FairMode) schedcore.ClusterContext {
 	nodes := make([]schedcore.Node, 0, len(snap.Nodes))
 	topologyCounts := make(map[string]int)
 	var capacitySum schedcore.Resources
@@ -29,6 +30,7 @@ func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantSta
 			Taints:        n.Taints,
 			HostPorts:     n.HostPorts,
 			Topology:      n.Topology,
+			TenantUsage:   cloneTenantUsage(n.TenantUsage),
 		})
 
 		// 只有可参与调度的节点才计入可仲裁容量。
@@ -88,7 +90,20 @@ func BuildContext(snap capacity.Snapshot, tenants map[string]schedcore.TenantSta
 		TopologyCounts:    topologyCounts,
 		MetricsKnown:      !snap.MetricsAt.IsZero(),
 		MetricsAgeSeconds: metricsAge,
+		FairMode:          fairMode,
 	}
+}
+
+// cloneTenantUsage 复制节点级租户用量，避免决策核与快照共享可变 map。
+func cloneTenantUsage(src map[string]schedcore.Resources) map[string]schedcore.Resources {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]schedcore.Resources, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // minPendingRequest 返回待调度 Pod 中最小的单副本 request，用于判定"不可用碎片"。

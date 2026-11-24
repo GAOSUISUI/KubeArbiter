@@ -30,7 +30,10 @@
               {{ p.name }}
               <div class="tag">{{ shortID(p.id) }}</div>
             </td>
-            <td><span class="chip info">{{ p.strategy }}</span></td>
+            <td>
+              <span class="chip info">{{ p.strategy }}</span>
+              <div class="tag" style="margin-top: 4px">{{ modeLabel(p.fairness_mode) }}</div>
+            </td>
             <td>
               <div style="display: flex; gap: 3px; align-items: center">
                 <div
@@ -66,6 +69,15 @@
             策略类型
             <select v-model="form.strategy">
               <option v-for="s in strategies" :key="s" :value="s">{{ s }}</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label>
+            公平模式
+            <select v-model="form.fairness_mode">
+              <option value="DRF">DRF（节点级试算）</option>
+              <option value="WEIGHTED_SHARE">WEIGHTED_SHARE（基线）</option>
             </select>
           </label>
         </div>
@@ -105,6 +117,7 @@ const form = reactive({
   id: '',
   name: '',
   strategy: 'BALANCED',
+  fairness_mode: 'DRF',
   is_default: false,
   pct: {
     s_cpu: 18,
@@ -129,6 +142,7 @@ const COLORS: Record<WeightKey, string> = {
   s_frag: '#6b7a90'
 }
 const colorOf = (k: WeightKey) => COLORS[k]
+const modeLabel = (m?: string) => (m === 'WEIGHTED_SHARE' ? '基线份额' : 'DRF')
 
 async function load() {
   try {
@@ -142,6 +156,7 @@ function openCreate() {
   form.id = ''
   form.name = ''
   form.strategy = 'BALANCED'
+  form.fairness_mode = 'DRF'
   form.is_default = false
   // 以 BALANCED 预设作为新建起点，避免全 0 权重无法保存。
   const base: Record<WeightKey, number> = {
@@ -162,6 +177,7 @@ function openEdit(p: Policy) {
   form.id = p.id
   form.name = p.name
   form.strategy = p.strategy
+  form.fairness_mode = p.fairness_mode || 'DRF'
   form.is_default = p.is_default
   WEIGHT_KEYS.forEach(k => (form.pct[k] = Math.round((p.weights[k] ?? 0) * 100)))
   formError.value = ''
@@ -191,6 +207,7 @@ async function save() {
       name: form.name.trim(),
       strategy: form.strategy,
       weights: normalized(),
+      fairness_mode: form.fairness_mode,
       is_default: form.is_default
     }
     if (form.id) await api.updatePolicy({ id: form.id, ...payload })
