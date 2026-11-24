@@ -1,6 +1,37 @@
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
 import type { EChartsOption } from 'echarts'
+import { BarChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts'
+import {
+  AxisPointerComponent,
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  RadarComponent,
+  TitleComponent,
+  ToolboxComponent,
+  TooltipComponent
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import { onBeforeUnmount, onMounted, type Ref } from 'vue'
+
+// 只注册控制台实际用到的图表与组件，避免把 ECharts 全量打进首屏。
+// 新增图表类型时须同步在这里登记，否则运行时会报 "series not exists"。
+echarts.use([
+  BarChart,
+  LineChart,
+  PieChart,
+  RadarChart,
+  ScatterChart,
+  AxisPointerComponent,
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  RadarComponent,
+  TitleComponent,
+  ToolboxComponent,
+  TooltipComponent,
+  CanvasRenderer
+])
 
 // 统一图表工具箱：右上角导出 PNG，避免每个页面重复声明。
 const TOOLBOX: EChartsOption['toolbox'] = {

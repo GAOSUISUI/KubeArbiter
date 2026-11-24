@@ -17,8 +17,8 @@
 | Kubernetes 集群（kubeadm） | v1.37.2，3 节点 | 2026-11-23 | `kubectl get nodes` → ka-cp1/ka-w1/ka-w2 均 Ready，v1.37.2 |
 | containerd | 2.2.1 | 2026-11-23 | 节点 `CONTAINER-RUNTIME` 列 → `containerd://2.2.1` |
 | Flannel | v0.28.11 | 2026-11-23 | `kubectl -n kube-flannel get ds` → 3/3 READY |
-| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.8.0`（单层 OCI，内嵌 Vue 控制台，manifest `sha256:723b4feafc1140118ab429ee71444a7e3b4bb04c8877742c85968d45da88c58e`） | 2026-11-23 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见；`GET /` 返回控制台 HTML |
-| 前端构建链 | Node 22.13.0（便携版）+ Vite 6 + Vue 3 + ECharts | 2026-11-23 | `npm run build` 输出到 `internal/webui/dist`，随 `go build` 嵌入二进制 |
+| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.9.3`（单层 OCI，内嵌 Vue 控制台，manifest `sha256:c25017f18a9360767405717f16687068f47a87b905d9a3aed6f100c3257a8e9a`） | 2026-11-24 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见；`GET /` 返回控制台 HTML |
+| 前端构建链 | Node 22.13.0（便携版）+ Vite 6 + Vue 3 + ECharts | 2026-11-23 | `npm run build` 输出到 `internal/webui/dist`，随 `go build` 嵌入二进制；路由懒加载 + ECharts 按需注册，构建产物从单包 1.25 MB 拆为入口 20 kB / vendor 110 kB / echarts 605 kB |
 
 > Helm 说明：winget 默认装到 v4.3.2，与冻结包"Helm 3.x 稳定版"冲突，已卸载并改装 v3.20.0。
 > kubectl/helm 二进制位于 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\...`，当前 shell 的 PATH 需重开后才生效。

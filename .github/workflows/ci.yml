@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 先生成前端 dist：go:embed 要求 internal/webui/dist 内存在真实产物。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test -race ./...
+
+      - name: Build arbiter-api
+        run: go build -trimpath -o bin/arbiter-api ./cmd/arbiter-api
+
+      # 校验离线镜像拼装工具：产物为 OCI layout tar，可直接在节点导入。
+      - name: Assemble OCI image
+        run: go run ./cmd/arbiter-image -bin bin/arbiter-api -ref docker.io/kubearbiter/arbiter-api:ci -out /tmp/arbiter-image-ci.tar
