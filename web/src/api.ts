@@ -99,20 +99,149 @@ export interface SimulateInput {
   weights?: Weights
 }
 
+export type TaskStatus =
+  | 'PENDING'
+  | 'PENDING_APPROVAL'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'RETRYING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export type TaskType =
+  | 'PLACEMENT_APPLY'
+  | 'PREEMPT'
+  | 'SCALE'
+  | 'RELEASE_PROMOTE'
+  | 'RELEASE_ABORT'
+  | 'RECOVERY'
+  | 'CONFIG_ROLLBACK'
+
+export interface Task {
+  id: string
+  type: TaskType | string
+  status: TaskStatus | string
+  params: Record<string, any>
+  retry_count: number
+  max_retries: number
+  error: string | null
+  error_code: number | null
+  created_by: string
+  approved_by: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface TaskLog {
+  ts: string
+  level: string
+  message: string
+}
+
+export interface TaskDetail extends Task {
+  logs: TaskLog[]
+}
+
+export interface TaskPage {
+  items: Task[]
+  next_cursor?: string | null
+}
+
+export interface AuditLog {
+  id: number
+  actor: string
+  action: string
+  object_type: string
+  object_id: string | null
+  before: Record<string, any> | null
+  after: Record<string, any> | null
+  trace_id: string | null
+  ts: string
+}
+
+export interface AuditPage {
+  items: AuditLog[]
+  next_cursor?: string | null
+}
+
+export interface TaskQuery {
+  status?: string
+  type?: string
+  limit?: number
+  cursor?: string
+}
+
+export interface AuditQuery {
+  object_type?: string
+  object_id?: string
+  limit?: number
+  cursor?: string
+}
+
 const BASE = () => localStorage.getItem('ka_api_base') || ''
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(BASE() + path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) }
+/** 当前调用方身份（X-Actor）；为空时后端按 anonymous 处理。 */
+export const actorName = () => localStorage.getItem('ka_actor') || ''
+
+function requestHeaders(extra?: HeadersInit, idempotent = false): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' }
+  const actor = actorName()
+  if (actor) h['X-Actor'] = actor
+  if (idempotent) h['X-Idempotency-Key'] = newIdempotencyKey()
+  return { ...h, ...((extra as Record<string, string>) || {}) }
+}
+
+function newIdempotencyKey() {
+  const c = globalThis.crypto as Crypto | undefined
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function query(params: Record<string, string | number | undefined | null>) {
+  const q = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
   })
-  if (res.status === 204) return undefined as T
-  const body = await res.json().catch(() => null)
-  if (!res.ok || (body && body.code !== 0)) {
-    const msg = body?.message || body?.error?.message || `HTTP ${res.status}`
-    throw new Error(msg)
+  const s = q.toString()
+  return s ? `?${s}` : ''
+}
+
+type CallError = Error & { status?: number; code?: number }
+
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method || 'GET').toUpperCase()
+  const retriable = method === 'GET'
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(BASE() + path, {
+        ...init,
+        headers: requestHeaders(init?.headers)
+      })
+      if (res.status === 204) return undefined as T
+      const body = await res.json().catch(() => null)
+      if (!res.ok || (body && body.code !== 0)) {
+        const msg = body?.message || body?.error?.message || `HTTP ${res.status}`
+        const err = new Error(msg) as CallError
+        err.status = res.status
+        if (body && typeof body.code === 'number') err.code = body.code
+        throw err
+      }
+      return (body ? body.data : undefined) as T
+    } catch (e) {
+      const err = e as CallError
+      // GET 幂等：网络错误或 5xx 时最多自动重试一次，避免瞬时抖动直接抛给页面。
+      const transient = !err.status || err.status >= 500
+      if (retriable && attempt === 0 && transient) {
+        await new Promise(r => setTimeout(r, 350))
+        continue
+      }
+      if (!err.status) err.status = 0
+      throw err
+    }
   }
-  return (body ? body.data : undefined) as T
 }
 
 export const api = {
@@ -135,7 +264,44 @@ export const api = {
     call<{ items: Decision[]; next_cursor?: string | null }>(
       `/api/v1/placement/decisions?limit=${limit}`
     ),
-  decision: (id: string) => call<Decision>(`/api/v1/placement/decisions/${id}`)
+  decision: (id: string) => call<Decision>(`/api/v1/placement/decisions/${id}`),
+
+  // 把一条已落库决策转成受控任务（进入待审批）。
+  applyPlacement: (decisionId: string) =>
+    call<Task>('/api/v1/placement/apply', {
+      method: 'POST',
+      headers: requestHeaders(undefined, true),
+      body: JSON.stringify({ decision_id: decisionId, allow_auto_execute: false })
+    }),
+
+  tasks: (q: TaskQuery = {}) =>
+    call<TaskPage>(
+      '/api/v1/tasks' + query({ status: q.status, type: q.type, limit: q.limit, cursor: q.cursor })
+    ),
+  task: (id: string) => call<TaskDetail>(`/api/v1/tasks/${encodeURIComponent(id)}`),
+  approveTask: (id: string) =>
+    call<Task>(`/api/v1/tasks/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      headers: requestHeaders(undefined, true),
+      body: '{}'
+    }),
+  cancelTask: (id: string) =>
+    call<Task>(`/api/v1/tasks/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+      headers: requestHeaders(undefined, true),
+      body: '{}'
+    }),
+
+  auditLogs: (q: AuditQuery = {}) =>
+    call<AuditPage>(
+      '/api/v1/audit-logs' +
+        query({
+          object_type: q.object_type,
+          object_id: q.object_id,
+          limit: q.limit,
+          cursor: q.cursor
+        })
+    )
 }
 
 // ---------- 展示用格式化 ----------
@@ -172,4 +338,47 @@ export function shortID(id?: string | null) {
 export function ageSeconds(iso?: string | null) {
   if (!iso) return null
   return Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+}
+
+/** 状态对应的 chip 色系，和页面现有 chip 类名保持一致。 */
+export function statusTone(status: string) {
+  switch (status) {
+    case 'SUCCEEDED':
+    case 'OK':
+      return 'ok'
+    case 'FAILED':
+    case 'CANCELLED':
+    case 'ERROR':
+      return 'bad'
+    case 'PENDING_APPROVAL':
+    case 'RETRYING':
+      return 'warn'
+    case 'RUNNING':
+    case 'QUEUED':
+      return 'info'
+    default:
+      return ''
+  }
+}
+
+export function fmtTime(iso?: string | null) {
+  return iso ? new Date(iso).toLocaleString() : '—'
+}
+
+/** 任务耗时：有 started_at 才算，未结束按当前时间滚动。 */
+export function fmtDuration(from?: string | null, to?: string | null) {
+  if (!from) return '—'
+  const end = to ? new Date(to).getTime() : Date.now()
+  const sec = Math.max(0, (end - new Date(from).getTime()) / 1000)
+  if (sec < 60) return sec.toFixed(1) + 's'
+  if (sec < 3600) return (sec / 60).toFixed(1) + 'min'
+  return (sec / 3600).toFixed(1) + 'h'
+}
+
+export function jsonText(v: unknown, indent = 2) {
+  try {
+    return JSON.stringify(v, null, indent)
+  } catch {
+    return String(v)
+  }
 }

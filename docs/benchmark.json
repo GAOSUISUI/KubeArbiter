@@ -1,0 +1,448 @@
+{
+  "seed": 42,
+  "rounds": 200,
+  "target_demand_ratio": 0.83,
+  "scenarios": [
+    {
+      "name": "balanced",
+      "variants": [
+        {
+          "name": "balanced-drf",
+          "strategy": "BALANCED",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.9734562987260041,
+            "cpu_utilization": 0.7888125,
+            "mem_utilization": 0.582977294921875,
+            "fragmentation": 0,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.18265695052754563,
+            "max_node_replica_share": 0.25,
+            "average_decision_us": 72.2265,
+            "p99_us": 616
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.4278125,
+              "weight": 4,
+              "dominant_share_over_weight": 0.106953125
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.1818125,
+              "weight": 2,
+              "dominant_share_over_weight": 0.09090625
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.0701875,
+              "weight": 1,
+              "dominant_share_over_weight": 0.0701875
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.109,
+              "weight": 1,
+              "dominant_share_over_weight": 0.109
+            }
+          ]
+        },
+        {
+          "name": "balanced-baseline",
+          "strategy": "BALANCED",
+          "fair_mode": "WEIGHTED_SHARE",
+          "metrics": {
+            "jain": 0.9734562987260041,
+            "cpu_utilization": 0.7888125,
+            "mem_utilization": 0.582977294921875,
+            "fragmentation": 0,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.19951401298198856,
+            "max_node_replica_share": 0.3333333333333333,
+            "average_decision_us": 2.7995,
+            "p99_us": 0
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.4278125,
+              "weight": 4,
+              "dominant_share_over_weight": 0.106953125
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.1818125,
+              "weight": 2,
+              "dominant_share_over_weight": 0.09090625
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.0701875,
+              "weight": 1,
+              "dominant_share_over_weight": 0.0701875
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.109,
+              "weight": 1,
+              "dominant_share_over_weight": 0.109
+            }
+          ]
+        },
+        {
+          "name": "fairshare-drf",
+          "strategy": "FAIR_SHARE",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.9734562987260041,
+            "cpu_utilization": 0.7888125,
+            "mem_utilization": 0.582977294921875,
+            "fragmentation": 0,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.18962640552577356,
+            "max_node_replica_share": 0.3125,
+            "average_decision_us": 64.3065,
+            "p99_us": 577.9
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.4278125,
+              "weight": 4,
+              "dominant_share_over_weight": 0.106953125
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.1818125,
+              "weight": 2,
+              "dominant_share_over_weight": 0.09090625
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.0701875,
+              "weight": 1,
+              "dominant_share_over_weight": 0.0701875
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.109,
+              "weight": 1,
+              "dominant_share_over_weight": 0.109
+            }
+          ]
+        },
+        {
+          "name": "fairshare-baseline",
+          "strategy": "FAIR_SHARE",
+          "fair_mode": "WEIGHTED_SHARE",
+          "metrics": {
+            "jain": 0.9734562987260041,
+            "cpu_utilization": 0.7888125,
+            "mem_utilization": 0.582977294921875,
+            "fragmentation": 0,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.19951401298198856,
+            "max_node_replica_share": 0.3333333333333333,
+            "average_decision_us": 0,
+            "p99_us": 0
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.4278125,
+              "weight": 4,
+              "dominant_share_over_weight": 0.106953125
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.1818125,
+              "weight": 2,
+              "dominant_share_over_weight": 0.09090625
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.0701875,
+              "weight": 1,
+              "dominant_share_over_weight": 0.0701875
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.109,
+              "weight": 1,
+              "dominant_share_over_weight": 0.109
+            }
+          ]
+        },
+        {
+          "name": "binpack-drf",
+          "strategy": "BIN_PACK",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.9734562987260041,
+            "cpu_utilization": 0.7888125,
+            "mem_utilization": 0.582977294921875,
+            "fragmentation": 0.00184375,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.30173421241700604,
+            "max_node_replica_share": 0.5625,
+            "average_decision_us": 30.3155,
+            "p99_us": 577.5
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.4278125,
+              "weight": 4,
+              "dominant_share_over_weight": 0.106953125
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.1818125,
+              "weight": 2,
+              "dominant_share_over_weight": 0.09090625
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.0701875,
+              "weight": 1,
+              "dominant_share_over_weight": 0.0701875
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.109,
+              "weight": 1,
+              "dominant_share_over_weight": 0.109
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "hot-tenant",
+      "variants": [
+        {
+          "name": "balanced-drf",
+          "strategy": "BALANCED",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.6333213570656635,
+            "cpu_utilization": 0.7940625,
+            "mem_utilization": 0.5666351318359375,
+            "fragmentation": 0,
+            "infeasible_rate": 0.005,
+            "mean_tenant_hhi": 0.1868753295268958,
+            "max_node_replica_share": 0.30434782608695654,
+            "average_decision_us": 64.18,
+            "p99_us": 586.9
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.64565625,
+              "weight": 4,
+              "dominant_share_over_weight": 0.1614140625
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.06084375,
+              "weight": 2,
+              "dominant_share_over_weight": 0.030421875
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.04465625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04465625
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.04290625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04290625
+            }
+          ],
+          "first_infeasible_round": 200
+        },
+        {
+          "name": "balanced-baseline",
+          "strategy": "BALANCED",
+          "fair_mode": "WEIGHTED_SHARE",
+          "metrics": {
+            "jain": 0.6333213570656635,
+            "cpu_utilization": 0.7940625,
+            "mem_utilization": 0.5666351318359375,
+            "fragmentation": 0,
+            "infeasible_rate": 0.005,
+            "mean_tenant_hhi": 0.21494153174817504,
+            "max_node_replica_share": 0.4,
+            "average_decision_us": 0,
+            "p99_us": 0
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.64565625,
+              "weight": 4,
+              "dominant_share_over_weight": 0.1614140625
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.06084375,
+              "weight": 2,
+              "dominant_share_over_weight": 0.030421875
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.04465625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04465625
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.04290625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04290625
+            }
+          ],
+          "first_infeasible_round": 200
+        },
+        {
+          "name": "fairshare-drf",
+          "strategy": "FAIR_SHARE",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.6333213570656635,
+            "cpu_utilization": 0.7940625,
+            "mem_utilization": 0.5666351318359375,
+            "fragmentation": 0.00303125,
+            "infeasible_rate": 0.005,
+            "mean_tenant_hhi": 0.18715571137087475,
+            "max_node_replica_share": 0.2608695652173913,
+            "average_decision_us": 61.641999999999996,
+            "p99_us": 596
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.64565625,
+              "weight": 4,
+              "dominant_share_over_weight": 0.1614140625
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.06084375,
+              "weight": 2,
+              "dominant_share_over_weight": 0.030421875
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.04465625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04465625
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.04290625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04290625
+            }
+          ],
+          "first_infeasible_round": 200
+        },
+        {
+          "name": "fairshare-baseline",
+          "strategy": "FAIR_SHARE",
+          "fair_mode": "WEIGHTED_SHARE",
+          "metrics": {
+            "jain": 0.6333213570656635,
+            "cpu_utilization": 0.7940625,
+            "mem_utilization": 0.5666351318359375,
+            "fragmentation": 0,
+            "infeasible_rate": 0.005,
+            "mean_tenant_hhi": 0.21494153174817504,
+            "max_node_replica_share": 0.4,
+            "average_decision_us": 2.8185000000000002,
+            "p99_us": 0
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.64565625,
+              "weight": 4,
+              "dominant_share_over_weight": 0.1614140625
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.06084375,
+              "weight": 2,
+              "dominant_share_over_weight": 0.030421875
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.04465625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04465625
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.04290625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04290625
+            }
+          ],
+          "first_infeasible_round": 200
+        },
+        {
+          "name": "binpack-drf",
+          "strategy": "BIN_PACK",
+          "fair_mode": "DRF",
+          "metrics": {
+            "jain": 0.5845861636320003,
+            "cpu_utilization": 0.898125,
+            "mem_utilization": 0.6415252685546875,
+            "fragmentation": 0.0010625,
+            "infeasible_rate": 0,
+            "mean_tenant_hhi": 0.4234911068335474,
+            "max_node_replica_share": 0.6666666666666666,
+            "average_decision_us": 34.27,
+            "p99_us": 589.7
+          },
+          "tenant_shares": [
+            {
+              "tenant_id": "tenant-a",
+              "dominant_share": 0.74971875,
+              "weight": 4,
+              "dominant_share_over_weight": 0.1874296875
+            },
+            {
+              "tenant_id": "tenant-b",
+              "dominant_share": 0.06084375,
+              "weight": 2,
+              "dominant_share_over_weight": 0.030421875
+            },
+            {
+              "tenant_id": "tenant-c",
+              "dominant_share": 0.04465625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04465625
+            },
+            {
+              "tenant_id": "tenant-d",
+              "dominant_share": 0.04290625,
+              "weight": 1,
+              "dominant_share_over_weight": 0.04290625
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "conclusions": [
+    "集群级租户公平性由 DRF 分配器与配额保证，节点级 DRF 不改变最终份额，两种模式 Jain 一致。",
+    "`balanced` 场景下，`balanced-drf` 相对 `balanced-baseline`：平均租户 HHI 降低 8.45%（0.1995 → 0.1827）；最大节点副本占比 降低 25.00%（33.33% → 25.00%）。",
+    "`hot-tenant` 场景下，`balanced-drf` 相对 `balanced-baseline`：平均租户 HHI 降低 13.06%（0.2149 → 0.1869）；最大节点副本占比 降低 23.91%（40.00% → 30.43%）。",
+    "`balanced` 场景下，`fairshare-drf` 相对 `fairshare-baseline`：平均租户 HHI 降低 4.96%（0.1995 → 0.1896）；最大节点副本占比 降低 6.25%（33.33% → 31.25%）。",
+    "`hot-tenant` 场景下，`fairshare-drf` 相对 `fairshare-baseline`：平均租户 HHI 降低 12.93%（0.2149 → 0.1872）；最大节点副本占比 降低 34.78%（40.00% → 26.09%）。"
+  ]
+}

@@ -10,11 +10,16 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
+	"github.com/kubearbiter/kubearbiter/internal/slo"
+	"github.com/kubearbiter/kubearbiter/internal/taskengine"
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
 // ErrNotFound 表示存储层未找到目标记录，handler 应转成 404。
 var ErrNotFound = errors.New("record not found")
+
+// ErrConflict 表示唯一键冲突（目前用于 service + sli_type 重复的 SLO 定义）。
+var ErrConflict = errors.New("record conflict")
 
 // Policy 对应 openapi.yaml 的 Policy。策略权重直接复用 schedcore.Weights，
 // 避免 API 层与决策核各定义一份七维权重后悄悄漂移。
@@ -131,19 +136,32 @@ type TenantLister interface {
 
 // MemoryStore 是只读视图的占位实现：没有数据库时不编造数据，默认返回空列表。
 type MemoryStore struct {
-	mu        sync.RWMutex
-	policies  []Policy
-	decisions []PlacementDecision
-	tenants   map[string]schedcore.TenantState
-	snapshots map[string]capacity.Snapshot
+	mu         sync.RWMutex
+	policies   []Policy
+	decisions  []PlacementDecision
+	tenants    map[string]schedcore.TenantState
+	snapshots  map[string]capacity.Snapshot
+	sloDefs    map[string]slo.Definition
+	sloBuckets map[string][]slo.Bucket
+	idempotent map[string]IdempotentRecord
+	tasks      []Task
+	taskLogs   map[string][]TaskLog
+	auditLogs  []AuditLog
+	auditSeq   int64
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		policies:  make([]Policy, 0),
-		decisions: make([]PlacementDecision, 0),
-		tenants:   make(map[string]schedcore.TenantState),
-		snapshots: make(map[string]capacity.Snapshot),
+		policies:   make([]Policy, 0),
+		decisions:  make([]PlacementDecision, 0),
+		tenants:    make(map[string]schedcore.TenantState),
+		snapshots:  make(map[string]capacity.Snapshot),
+		sloDefs:    make(map[string]slo.Definition),
+		sloBuckets: make(map[string][]slo.Bucket),
+		idempotent: make(map[string]IdempotentRecord),
+		tasks:      make([]Task, 0),
+		taskLogs:   make(map[string][]TaskLog),
+		auditLogs:  make([]AuditLog, 0),
 	}
 }
 
@@ -294,4 +312,131 @@ func (s *MemoryStore) DeletePolicy(_ context.Context, id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+// ---------- 任务 ----------
+
+func (s *MemoryStore) ListTasks(_ context.Context, f TaskFilter) ([]Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Task, 0, len(s.tasks))
+	for _, t := range s.tasks {
+		if f.Status != "" && t.Status != f.Status {
+			continue
+		}
+		if f.Type != "" && t.Type != f.Type {
+			continue
+		}
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
+}
+
+func (s *MemoryStore) GetTask(_ context.Context, id string) (Task, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.tasks {
+		if t.ID == id {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
+func (s *MemoryStore) ListTaskLogs(_ context.Context, taskID string) ([]TaskLog, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]TaskLog{}, s.taskLogs[taskID]...), nil
+}
+
+func (s *MemoryStore) CreateTask(_ context.Context, t Task) (Task, error) {
+	if t.ID == "" {
+		t.ID = uuid.NewString()
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
+	t.Params = cloneParams(t.Params)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks = append(s.tasks, t)
+	return t, nil
+}
+
+// UpdateTask 以 expected 做乐观并发控制，模拟 PostgreSQL 的 WHERE status=$expected。
+func (s *MemoryStore) UpdateTask(_ context.Context, t Task, expected taskengine.Status) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID != t.ID {
+			continue
+		}
+		if s.tasks[i].Status != expected {
+			return Task{}, ErrConflict
+		}
+		t.Params = cloneParams(t.Params)
+		s.tasks[i] = t
+		return t, nil
+	}
+	return Task{}, ErrNotFound
+}
+
+func (s *MemoryStore) AppendTaskLog(_ context.Context, taskID string, log TaskLog) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskLogs[taskID] = append(s.taskLogs[taskID], log)
+	return nil
+}
+
+func cloneParams(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		out[k] = v
+	}
+	return out
+}
+
+// ---------- 审计 ----------
+
+func (s *MemoryStore) AppendAuditLog(_ context.Context, log AuditLog) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditSeq++
+	log.ID = s.auditSeq
+	if log.TS.IsZero() {
+		log.TS = time.Now().UTC()
+	}
+	s.auditLogs = append(s.auditLogs, log)
+	return nil
+}
+
+func (s *MemoryStore) ListAuditLogs(_ context.Context, f AuditFilter) ([]AuditLog, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AuditLog, 0, len(s.auditLogs))
+	for _, log := range s.auditLogs {
+		if f.ObjectType != "" && log.ObjectType != f.ObjectType {
+			continue
+		}
+		if f.ObjectID != "" && (log.ObjectID == nil || *log.ObjectID != f.ObjectID) {
+			continue
+		}
+		out = append(out, log)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].TS.Equal(out[j].TS) {
+			return out[i].TS.After(out[j].TS)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
 }

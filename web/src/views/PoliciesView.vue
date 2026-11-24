@@ -105,6 +105,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api, WEIGHT_KEYS, WEIGHT_LABELS, shortID, type Policy, type WeightKey } from '../api'
+import { confirmAction, toastBad, toastOk } from '../lib/feedback'
 
 const strategies = ['BALANCED', 'BIN_PACK', 'FAIR_SHARE', 'LOAD_AWARE']
 const policies = ref<Policy[]>([])
@@ -214,20 +215,30 @@ async function save() {
     else await api.createPolicy(payload)
     editing.value = false
     await load()
+    toastOk(form.id ? `策略已更新：${payload.name}` : `策略已创建：${payload.name}`)
   } catch (e: any) {
     formError.value = e?.message || String(e)
+    toastBad(`保存失败：${formError.value}`)
   } finally {
     saving.value = false
   }
 }
 
 async function remove(p: Policy) {
-  if (!window.confirm(`删除策略「${p.name}」？`)) return
+  const ok = await confirmAction({
+    title: '删除策略',
+    message: `删除策略「${p.name}」？\n若它仍被决策引用，可能影响历史回看。`,
+    okText: '删除',
+    danger: true
+  })
+  if (!ok) return
   try {
     await api.deletePolicy(p.id)
     await load()
+    toastOk(`策略已删除：${p.name}`)
   } catch (e: any) {
     error.value = e?.message || String(e)
+    toastBad(`删除失败：${error.value}`)
   }
 }
 

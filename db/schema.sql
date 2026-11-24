@@ -308,7 +308,22 @@ CREATE TABLE task_logs (
 CREATE INDEX idx_task_logs_task ON task_logs (task_id, ts);
 
 -- ============================================================
--- 8. 审计（只插入，不可修改）
+-- 8. 写接口幂等
+-- ============================================================
+
+-- 通用写接口幂等记录：scope 为"方法 + 实际路径"，request_hash 为请求体 sha256。
+-- 同键同 scope 同 hash 重放 response；任一不符返回 40901。
+CREATE TABLE idempotency_keys (
+    idempotency_key varchar(128) PRIMARY KEY,
+    scope           text         NOT NULL,
+    request_hash    char(64)     NOT NULL,
+    status          integer      NOT NULL,
+    response        jsonb,                       -- 204 等无响应体时为 NULL
+    created_at      timestamptz  NOT NULL DEFAULT now()
+);
+
+-- ============================================================
+-- 9. 审计（只插入，不可修改）
 -- ============================================================
 
 CREATE TABLE audit_logs (
@@ -337,7 +352,7 @@ CREATE TRIGGER trg_audit_logs_immutable
     FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable();
 
 -- ============================================================
--- 9. 用户与权限
+-- 10. 用户与权限
 -- ============================================================
 
 CREATE TABLE users (

@@ -34,7 +34,11 @@ func main() {
 	defer stop()
 
 	store := api.NewMemoryStore()
-	deps := api.Deps{Policies: store, Decisions: store, Writer: store, Snapshots: store}
+	deps := api.Deps{
+		Policies: store, Decisions: store, Writer: store, Snapshots: store,
+		SLO: store, SLOWriter: store, Idempotency: store,
+		Tasks: store, TaskWriter: store, AuditLogs: store, AuditWriter: store,
+	}
 
 	// 有可用 kubeconfig 时才连集群；连不上不阻塞启动，改为在 /healthz 暴露 k8s 依赖不可用。
 	if view, err := startClusterView(ctx); err != nil {
@@ -65,6 +69,11 @@ func main() {
 			deps.Policies, deps.PolicyWriter = pg, pg
 			deps.Decisions, deps.Writer = pg, pg
 			deps.Tenants, deps.Snapshots, deps.TenantCatalog = pg, pg, pg
+			deps.SLO = pg
+			deps.SLOWriter = pg
+			deps.Idempotency = pg
+			deps.Tasks, deps.TaskWriter = pg, pg
+			deps.AuditLogs, deps.AuditWriter = pg, pg
 			if deps.Checks == nil {
 				deps.Checks = map[string]func(context.Context) error{}
 			}

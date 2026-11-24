@@ -67,7 +67,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: arbiter-api
-          image: kubearbiter/arbiter-api:0.5.0
+          image: kubearbiter/arbiter-api:0.9.3
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

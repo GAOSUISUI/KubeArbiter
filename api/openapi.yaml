@@ -526,6 +526,38 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '503':
           $ref: '#/components/responses/Unavailable'
+    post:
+      tags: [slo]
+      summary: 创建 SLO 定义
+      description: service + sli_type 唯一；LATENCY 类型必须提供 latency_threshold_ms。支持 Idempotency-Key。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SLOUpsert'
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SLODefinition'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /api/v1/slo/{service}:
     get:
@@ -586,6 +618,79 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/slo/{service}/{sli_type}:
+    put:
+      tags: [slo]
+      summary: 更新 SLO 定义
+      description: service 与 sli_type 构成唯一键，不可通过本接口修改。支持 Idempotency-Key。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: { type: string }
+        - name: sli_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/SliType'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SLOUpdate'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SLODefinition'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      tags: [slo]
+      summary: 删除 SLO 定义
+      description: 只删除定义，不级联删除已写入的 slo_windows 历史数据。支持 Idempotency-Key。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: { type: string }
+        - name: sli_type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/SliType'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
   # ---------------------------------------------------------------- scaling
   /api/v1/scaling/recommendations:
     get:
@@ -616,7 +721,7 @@ paths:
     post:
       tags: [scaling]
       summary: 采纳容量建议（创建 SCALE 任务）
-      description: `confidence=UNUSABLE` 的建议不可采纳，返回 42201。
+      description: confidence=UNUSABLE 的建议不可采纳，返回 42201。
       parameters:
         - $ref: '#/components/parameters/PathId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1744,9 +1849,76 @@ components:
             $ref: '#/components/schemas/BurnRateWindow'
         degraded: { type: boolean }
 
+    SloAction:
+      type: string
+      enum: [NONE, TICKET, ALERT, BLOCK_FULL_ROLLOUT, ROLLBACK]
+
+    SLODefinition:
+      type: object
+      required: [service, sli_type, target, window_seconds]
+      properties:
+        service:
+          type: string
+          maxLength: 253
+        sli_type:
+          $ref: '#/components/schemas/SliType'
+        target:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        window_seconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+        latency_threshold_ms:
+          type: integer
+          nullable: true
+          minimum: 1
+
+    SLOUpsert:
+      type: object
+      required: [service, sli_type, target, window_seconds]
+      properties:
+        service:
+          type: string
+          maxLength: 253
+        sli_type:
+          $ref: '#/components/schemas/SliType'
+        target:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        window_seconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+        latency_threshold_ms:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: 仅 LATENCY 类型允许设置
+
+    SLOUpdate:
+      type: object
+      required: [target, window_seconds]
+      properties:
+        target:
+          type: number
+          exclusiveMinimum: 0
+          exclusiveMaximum: 1
+        window_seconds:
+          type: integer
+          minimum: 1
+          maximum: 315360000
+        latency_threshold_ms:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: 仅 LATENCY 类型允许设置
+
     BudgetStatus:
       type: object
-      required: [service, window, budget_total, budget_consumed, budget_remaining, publishing_allowed]
+      required: [service, window, budget_total, budget_consumed, budget_remaining, publishing_allowed, action]
       properties:
         service: { type: string }
         window: { type: string }
@@ -1758,6 +1930,12 @@ components:
         publishing_allowed: { type: boolean }
         degraded: { type: boolean }
         completeness: { type: number }
+        action:
+          $ref: '#/components/schemas/SloAction'
+        reasons:
+          type: array
+          description: 机器可读的触发原因，如 FAST_BURN_14_4
+          items: { type: string }
 
     # ------------------------------------------------ 容量建议
     CurvePoint:

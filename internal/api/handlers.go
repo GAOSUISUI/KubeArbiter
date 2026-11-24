@@ -25,16 +25,30 @@ const (
 
 // Deps 是 API 层的依赖集合，由 cmd/arbiter-api 注入。
 type Deps struct {
-	Policies    PolicyReader
+	Policies     PolicyReader
 	PolicyWriter PolicyWriter
-	Decisions   DecisionReader
-	Writer      DecisionWriter
+	Decisions    DecisionReader
+	Writer       DecisionWriter
 	// Tenants 提供租户权重与配额；未接入库时为空，模拟接口按权重 1、无配额兜底。
 	Tenants TenantReader
 	// TenantCatalog 列出全部租户，供容量明细接口使用；为空时该接口返回 503。
 	TenantCatalog TenantLister
 	// Snapshots 把决策所用快照留档；为空时跳过留档。
 	Snapshots SnapshotWriter
+	// SLO 提供 SLO 定义与分钟级预聚合窗口；未接入库时回退到空的内存实现。
+	SLO SLOReader
+	// SLOWriter 提供 SLO 定义写接口；为空时写请求返回 503。
+	SLOWriter SLODefinitionWriter
+	// Idempotency 记录写请求的幂等结果；为空时回退到内存实现。
+	Idempotency IdempotencyStore
+	// Tasks 读取任务与执行日志；为空时回退到内存实现。
+	Tasks TaskReader
+	// TaskWriter 创建任务并做状态跃迁；为空时回退到内存实现。
+	TaskWriter TaskWriter
+	// AuditLogs 查询审计记录；为空时回退到内存实现。
+	AuditLogs AuditReader
+	// AuditWriter 追加审计记录；为空时回退到内存实现。
+	AuditWriter AuditWriter
 	// TenantOfNamespace 由 informer 缓存解析命名空间上的 arbiter.io/tenant 标签；
 	// 仅 webhook 路径使用，为空时 webhook 直接放行。
 	TenantOfNamespace func(namespace string) (string, bool)
@@ -53,12 +67,48 @@ func NewRouter(d Deps) *gin.Engine {
 		if d.Writer == nil {
 			d.Writer = store
 		}
+		if d.SLO == nil {
+			d.SLO = store
+		}
+		if d.Idempotency == nil {
+			d.Idempotency = store
+		}
+		if d.Tasks == nil {
+			d.Tasks = store
+		}
+		if d.TaskWriter == nil {
+			d.TaskWriter = store
+		}
+		if d.AuditLogs == nil {
+			d.AuditLogs = store
+		}
+		if d.AuditWriter == nil {
+			d.AuditWriter = store
+		}
 	}
 	if d.Policies == nil {
 		d.Policies = NewMemoryStore()
 	}
 	if d.Decisions == nil {
 		d.Decisions = NewMemoryStore()
+	}
+	if d.SLO == nil {
+		d.SLO = NewMemoryStore()
+	}
+	if d.Idempotency == nil {
+		d.Idempotency = NewMemoryStore()
+	}
+	if d.Tasks == nil {
+		d.Tasks = NewMemoryStore()
+	}
+	if d.TaskWriter == nil {
+		d.TaskWriter = NewMemoryStore()
+	}
+	if d.AuditLogs == nil {
+		d.AuditLogs = NewMemoryStore()
+	}
+	if d.AuditWriter == nil {
+		d.AuditWriter = NewMemoryStore()
 	}
 
 	r := gin.New()
@@ -77,6 +127,18 @@ func NewRouter(d Deps) *gin.Engine {
 	v1.GET("/placement/decisions", listDecisions(d))
 	v1.GET("/placement/decisions/:id", getDecision(d))
 	v1.POST("/placement/simulate", simulatePlacement(d))
+	v1.POST("/placement/apply", applyPlacement(d))
+	v1.GET("/tasks", listTasks(d))
+	v1.GET("/tasks/:id", getTask(d))
+	v1.POST("/tasks/:id/approve", approveTask(d))
+	v1.POST("/tasks/:id/cancel", cancelTask(d))
+	v1.GET("/audit-logs", listAuditLogs(d))
+	v1.GET("/slo", listSLO(d))
+	v1.GET("/slo/:service", getSLODetail(d))
+	v1.GET("/slo/:service/budget", getSLOBudget(d))
+	v1.POST("/slo", createSLODefinition(d))
+	v1.PUT("/slo/:service/:sliType", updateSLODefinition(d))
+	v1.DELETE("/slo/:service/:sliType", deleteSLODefinition(d))
 
 	// 准入 webhook 正式路径走独立端口的 TLS 服务，这里同二进制内也注册一份，便于本地调试与单测。
 	r.POST("/webhook/mutate-pods", webhookMutate(d))
@@ -549,17 +611,17 @@ func degraded(warnings []schedcore.WarningCode) bool {
 
 // capacityTotals 对应 CapacityTotals：节点数、可分配总量、已请求总量。
 type capacityTotals struct {
-	Count       int               `json:"count"`
+	Count       int                 `json:"count"`
 	Allocatable schedcore.Resources `json:"allocatable"`
 	Requested   schedcore.Resources `json:"requested"`
 }
 
 type capacityOverviewResp struct {
-	AsOf        time.Time        `json:"as_of"`
-	Nodes       capacityTotals   `json:"nodes"`
-	TenantCount int              `json:"tenant_count"`
-	JainIndex   *float64         `json:"jain_index"`
-	SLOSummary  any              `json:"slo_summary"`
+	AsOf        time.Time      `json:"as_of"`
+	Nodes       capacityTotals `json:"nodes"`
+	TenantCount int            `json:"tenant_count"`
+	JainIndex   *float64       `json:"jain_index"`
+	SLOSummary  any            `json:"slo_summary"`
 }
 
 // capacityOverview 汇总节点容量与租户公平性。SLO 汇总要等指标与 SLO 评估接入，
@@ -713,14 +775,14 @@ func dominantShare(used, cap schedcore.Resources) float64 {
 // ---------- 节点级明细（临时前端仪表盘用，非正式契约端点）----------
 
 type nodeItem struct {
-	Name       string              `json:"name"`
-	Ready      bool                `json:"ready"`
+	Name        string              `json:"name"`
+	Ready       bool                `json:"ready"`
 	Allocatable schedcore.Resources `json:"allocatable"`
-	Requested  schedcore.Resources `json:"requested"`
-	Usage      schedcore.Resources `json:"usage"`
-	UsageKnown bool                `json:"usage_known"`
-	PodCount   int                 `json:"pod_count"`
-	Topology   map[string]string   `json:"topology"`
+	Requested   schedcore.Resources `json:"requested"`
+	Usage       schedcore.Resources `json:"usage"`
+	UsageKnown  bool                `json:"usage_known"`
+	PodCount    int                 `json:"pod_count"`
+	Topology    map[string]string   `json:"topology"`
 }
 
 type nodeListResp struct {

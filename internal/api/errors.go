@@ -47,6 +47,26 @@ func errNotFound() *apiError {
 	return &apiError{code: CodeNotFound, message: msgNotFound}
 }
 
+// errConflict 用于唯一键冲突等幂等性冲突（如重复创建同一 SLO 定义）。
+func errConflict(message string, details ...ErrorDetail) *apiError {
+	return &apiError{code: CodeIdempotencyConflict, message: message, details: details}
+}
+
+// errForbidden 用于对象级权限校验失败（如审批人与创建人相同）。
+func errForbidden(message string, details ...ErrorDetail) *apiError {
+	return &apiError{code: CodeForbidden, message: message, details: details}
+}
+
+// errIllegalTransition 用于状态机不允许的跃迁（如取消运行中的任务）。
+func errIllegalTransition(message string, details ...ErrorDetail) *apiError {
+	return &apiError{code: CodeIllegalTransition, message: message, details: details}
+}
+
+// errResourceLocked 用于并发修改同一对象（如两个审批同时通过）。
+func errResourceLocked(message string, details ...ErrorDetail) *apiError {
+	return &apiError{code: CodeResourceLocked, message: message, details: details}
+}
+
 func errInternal() *apiError {
 	return &apiError{code: CodeInternal, message: msgInternal}
 }
