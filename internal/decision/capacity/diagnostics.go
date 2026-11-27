@@ -51,6 +51,8 @@ type PodDiag struct {
 	LastTerminatedAt     time.Time
 	Ready                bool
 	ReadySince           time.Time
+	// Requests 是该 Pod 全部容器的 request 汇总，供 rightsizing 使用。
+	Requests schedcore.Resources
 }
 
 // Diagnostics 从 informer 缓存构造观察结果。单次遍历 nodes 与 pods，全部为副本。
@@ -147,6 +149,7 @@ func podDiagnostics(pod *corev1.Pod) PodDiag {
 		NodeName:  pod.Spec.NodeName,
 		Phase:     pod.Status.Phase,
 		CreatedAt: pod.CreationTimestamp.Time,
+		Requests:  podRequests(pod),
 	}
 	if pod.Status.StartTime != nil {
 		pd.StartTime = pod.Status.StartTime.Time

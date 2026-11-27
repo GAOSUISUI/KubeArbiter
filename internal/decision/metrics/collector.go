@@ -26,16 +26,18 @@ const (
 type Collector struct {
 	client   kubernetes.Interface
 	store    *Store
+	podUsage *PodUsageStore
 	interval time.Duration
 	timeout  time.Duration
 	now      func() time.Time
 	logf     func(format string, args ...any)
 }
 
-func NewCollector(client kubernetes.Interface, store *Store) *Collector {
+func NewCollector(client kubernetes.Interface, store *Store, podUsage *PodUsageStore) *Collector {
 	return &Collector{
 		client:   client,
 		store:    store,
+		podUsage: podUsage,
 		interval: DefaultInterval,
 		timeout:  DefaultTimeout,
 		now:      time.Now,
@@ -75,19 +77,23 @@ func (c *Collector) Collect(ctx context.Context) error {
 	var errs []error
 	for _, node := range nodes.Items {
 		nodeCtx, cancel := context.WithTimeout(ctx, c.timeout)
-		usage, err := c.fetchSummary(nodeCtx, node.Name)
+		usage, pods, err := c.fetchSummary(nodeCtx, node.Name)
 		cancel()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("节点 %s: %w", node.Name, err))
 			continue
 		}
 		c.store.Observe(node.Name, usage, c.now())
+		if c.podUsage != nil {
+			c.podUsage.ObservePods(node.Name, pods, c.now())
+		}
 	}
 	return errors.Join(errs...)
 }
 
-// fetchSummary 读取 /api/v1/nodes/<name>/proxy/stats/summary 并折算为 schedcore.Resources。
-func (c *Collector) fetchSummary(ctx context.Context, node string) (schedcore.Resources, error) {
+// fetchSummary 读取 /api/v1/nodes/<name>/proxy/stats/summary，
+// 返回节点级用量与按 Pod 聚合的容器用量。
+func (c *Collector) fetchSummary(ctx context.Context, node string) (schedcore.Resources, map[PodKey]schedcore.Resources, error) {
 	raw, err := c.client.CoreV1().RESTClient().
 		Get().
 		Resource("nodes").
@@ -96,22 +102,42 @@ func (c *Collector) fetchSummary(ctx context.Context, node string) (schedcore.Re
 		Suffix("stats/summary").
 		DoRaw(ctx)
 	if err != nil {
-		return schedcore.Resources{}, fmt.Errorf("读取 stats/summary: %w", err)
+		return schedcore.Resources{}, nil, fmt.Errorf("读取 stats/summary: %w", err)
 	}
 
 	var summary nodeSummary
 	if err := json.Unmarshal(raw, &summary); err != nil {
-		return schedcore.Resources{}, fmt.Errorf("解析 stats/summary: %w", err)
+		return schedcore.Resources{}, nil, fmt.Errorf("解析 stats/summary: %w", err)
 	}
 	if summary.Node.CPU.UsageNanoCores == nil || summary.Node.Memory.WorkingSetBytes == nil {
-		return schedcore.Resources{}, errors.New("stats/summary 缺少 cpu.usageNanoCores 或 memory.workingSetBytes")
+		return schedcore.Resources{}, nil, errors.New("stats/summary 缺少 cpu.usageNanoCores 或 memory.workingSetBytes")
+	}
+
+	// per-pod 用量：逐容器累加（summary 的 pods[].cpu/memory 本身已是该 Pod 汇总，
+	// 但按容器累加能兼容个别 kubelet 把并发容器拆开上报的形态）。
+	pods := make(map[PodKey]schedcore.Resources, len(summary.Pods))
+	for _, p := range summary.Pods {
+		if p.PodRef.Namespace == "" || p.PodRef.Name == "" {
+			continue
+		}
+		var cpuMilli, memBytes int64
+		for _, cs := range p.Containers {
+			if cs.CPU.UsageNanoCores != nil {
+				cpuMilli += *cs.CPU.UsageNanoCores / 1_000_000
+			}
+			if cs.Memory.WorkingSetBytes != nil {
+				memBytes += *cs.Memory.WorkingSetBytes
+			}
+		}
+		key := PodKey{Namespace: p.PodRef.Namespace, Name: p.PodRef.Name}
+		pods[key] = schedcore.Resources{CPUMilli: cpuMilli, MemBytes: memBytes}
 	}
 
 	return schedcore.Resources{
 		// 纳核 -> 毫核，整数除法即可，load 维度只关心百分位量级。
 		CPUMilli: *summary.Node.CPU.UsageNanoCores / 1_000_000,
 		MemBytes: *summary.Node.Memory.WorkingSetBytes,
-	}, nil
+	}, pods, nil
 }
 
 // nodeSummary 只解析需要的字段。字段用指针以区分"缺失"与"值为 0"。
@@ -124,4 +150,21 @@ type nodeSummary struct {
 			WorkingSetBytes *int64 `json:"workingSetBytes"`
 		} `json:"memory"`
 	} `json:"node"`
+	Pods []podSummary `json:"pods"`
+}
+
+// podSummary 是 stats/summary 中单个 Pod 的用量块。
+type podSummary struct {
+	PodRef struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+	} `json:"podRef"`
+	Containers []struct {
+		CPU struct {
+			UsageNanoCores *int64 `json:"usageNanoCores"`
+		} `json:"cpu"`
+		Memory struct {
+			WorkingSetBytes *int64 `json:"workingSetBytes"`
+		} `json:"memory"`
+	} `json:"containers"`
 }

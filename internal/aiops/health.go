@@ -126,6 +126,10 @@ func nodeHealth(node capacity.NodeDiag, in HealthInput) (*float64, []HealthCompo
 		if f.Namespace != NamespaceNode || f.Target != node.Name {
 			continue
 		}
+		// 预测耗尽单列扣分项，不并入通用 WARN 计数，避免双重扣分。
+		if f.Type == IncidentNodeForecastExhaust {
+			continue
+		}
 		switch f.Severity {
 		case SeverityCritical:
 			crit++
@@ -146,6 +150,14 @@ func nodeHealth(node capacity.NodeDiag, in HealthInput) (*float64, []HealthCompo
 		comps = append(comps, HealthComponent{
 			Code: "WARN_INCIDENTS", Message: fmt.Sprintf("%d 个告警事件", warn), Delta: delta,
 		})
+	}
+	for _, f := range in.Findings {
+		if f.Type == IncidentNodeForecastExhaust && f.Namespace == NamespaceNode && f.Target == node.Name {
+			score -= 5
+			comps = append(comps, HealthComponent{
+				Code: "FORECAST_EXHAUST", Message: "负载趋势预计 30 分钟内达到容量 90%", Delta: -5,
+			})
+		}
 	}
 	return clampScore(score), comps
 }

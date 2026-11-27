@@ -77,6 +77,7 @@ const NAV = [
   { path: '/nodes', label: '节点与容量', kw: 'node 节点 容量 集群' },
   { path: '/tasks', label: '任务与审计', kw: 'task 任务 审计 audit' },
   { path: '/monitor', label: '监控大盘', kw: 'monitor 监控 指标 健康分 大盘' },
+  { path: '/forecast', label: '预测与容量', kw: 'forecast 预测 容量 耗尽 rightsizing 调优' },
   { path: '/incidents', label: '异常事件', kw: 'incident 事件 故障 诊断 diagnosis' },
   { path: '/slo', label: 'SLO 治理', kw: 'slo 可用性 预算 燃尽 error budget' }
 ]

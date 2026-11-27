@@ -24,6 +24,12 @@ const (
 	CrashLoopCriticalRestarts = 10
 	// OOMRecentWindow 是 OOM 事件的有效期；lastState 会长期保留，超过窗口且已就绪则视为历史。
 	OOMRecentWindow = 30 * time.Minute
+	// ForecastWarnWindow 是"预计耗尽"的告警窗口：按当前趋势 30 分钟内到达 90% 容量才告警。
+	ForecastWarnWindow = 30 * time.Minute
+	// ForecastMinR2 是预测告警的最低拟合优度，避免噪声序列误报。
+	ForecastMinR2 = 0.6
+	// ForecastMinUsageRatio 是预测告警的最低当前占比，占比过低时外推没有参考意义。
+	ForecastMinUsageRatio = 0.6
 )
 
 // TenantInput 是检测与健康分需要的租户视图。
@@ -43,6 +49,8 @@ type RuleInput struct {
 	Pods      []capacity.PodDiag
 	Tenants   []TenantInput
 	MetricsAt time.Time
+	// Forecasts 是各节点的负载外推摘要；为空时预测规则跳过。
+	Forecasts []NodeForecastSummary
 }
 
 // Finding 是一条待落库的检测结果。
@@ -300,6 +308,38 @@ func Detect(in RuleInput) []Finding {
 				}},
 			})
 		}
+	}
+
+	// 预测规则：线性外推显示节点将在预警窗口内达到 90% 容量。
+	// 只在拟合质量与当前占比都达标时告警；输出仅为建议。
+	for _, fc := range in.Forecasts {
+		if fc.TimeToFull90 == nil {
+			continue
+		}
+		eta := *fc.TimeToFull90
+		if eta <= 0 || eta > ForecastWarnWindow {
+			continue
+		}
+		if fc.R2 < ForecastMinR2 || fc.UsageRatio < ForecastMinUsageRatio {
+			continue
+		}
+		out = append(out, Finding{
+			Type:      IncidentNodeForecastExhaust,
+			Namespace: NamespaceNode,
+			Target:    fc.Name,
+			Severity:  SeverityWarn,
+			Facts: []Fact{newFact(now, "node/"+fc.Name, "节点负载趋势预计即将达到容量上限", map[string]any{
+				"time_to_full_90_seconds": int64(eta.Seconds()),
+				"r2":                      round3(fc.R2),
+				"usage_ratio":             round3(fc.UsageRatio),
+			})},
+			Inferences: []Inference{{
+				RootCause:       "节点负载持续线性上升，按当前趋势将在预警窗口内达到 allocatable 90%",
+				Confidence:      "MEDIUM",
+				Evidence:        []string{fmt.Sprintf("预计 %.0f 分钟后达到 90%%，R²=%.2f，当前占比 %.0f%%", eta.Minutes(), fc.R2, fc.UsageRatio*100)},
+				CounterEvidence: []string{"线性外推无法覆盖突发回落；EWMA 平滑使趋势偏保守"},
+			}},
+		})
 	}
 
 	return out

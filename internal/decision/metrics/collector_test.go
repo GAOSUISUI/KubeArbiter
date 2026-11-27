@@ -56,7 +56,8 @@ func newFakeAPIServer(t *testing.T, summaries map[string]string) *Collector {
 		t.Fatalf("构造 clientset: %v", err)
 	}
 	store := NewStore()
-	return NewCollector(client, store)
+	podStore := NewPodUsageStore()
+	return NewCollector(client, store, podStore)
 }
 
 func TestCollectorCollectsAllNodes(t *testing.T) {
@@ -158,5 +159,69 @@ func TestCollectorRunStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("ctx 取消后 Run 应及时返回")
+	}
+}
+
+// TestCollectorAggregatesPodUsage 验证 stats/summary 的 pods[] 被解析并逐容器累加。
+func TestCollectorAggregatesPodUsage(t *testing.T) {
+	c := newFakeAPIServer(t, map[string]string{
+		"ka-w1": `{
+			"node":{"cpu":{"usageNanoCores":800000000},"memory":{"workingSetBytes":3221225472}},
+			"pods":[
+				{"podRef":{"namespace":"prod","name":"web-1"},
+				 "containers":[
+					{"cpu":{"usageNanoCores":120000000},"memory":{"workingSetBytes":268435456}},
+					{"cpu":{"usageNanoCores":80000000},"memory":{"workingSetBytes":134217728}}]},
+				{"podRef":{"namespace":"team-a","name":"web-2"},
+				 "containers":[{"cpu":{"usageNanoCores":300000000},"memory":{"workingSetBytes":536870912}}]},
+				{"podRef":{"namespace":"","name":"broken"},"containers":[{"cpu":{"usageNanoCores":1}}]}
+			]}`,
+	})
+	if err := c.Collect(context.Background()); err != nil {
+		t.Fatalf("采集失败: %v", err)
+	}
+
+	want := map[PodKey]schedcore.Resources{
+		{Namespace: "prod", Name: "web-1"}:   {CPUMilli: 200, MemBytes: 268435456 + 134217728},
+		{Namespace: "team-a", Name: "web-2"}: {CPUMilli: 300, MemBytes: 536870912},
+	}
+	for key, expect := range want {
+		got, _, ok := c.podUsage.PodUsage(key)
+		if !ok {
+			t.Fatalf("%v 应有用量记录", key)
+		}
+		if got != expect {
+			t.Fatalf("%v 用量 = %+v, want %+v", key, got, expect)
+		}
+	}
+	// 缺 namespace 的条目应被跳过。
+	if _, _, ok := c.podUsage.PodUsage(PodKey{Name: "broken"}); ok {
+		t.Fatal("podRef 不完整的 Pod 不应记录")
+	}
+}
+
+// TestPodUsageStoreEWMAGC 验证 per-pod 用量的 EWMA 平滑与消失后的惰性清理。
+func TestPodUsageStoreEWMAGC(t *testing.T) {
+	s := NewPodUsageStore()
+	key := PodKey{Namespace: "prod", Name: "web"}
+	base := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+
+	s.ObservePods("n1", map[PodKey]schedcore.Resources{key: {CPUMilli: 100, MemBytes: 1024}}, base)
+	// 同一时刻重复观察：dt=0，EWMA 不变。
+	s.ObservePods("n1", map[PodKey]schedcore.Resources{key: {CPUMilli: 500, MemBytes: 4096}}, base)
+	got, _, _ := s.PodUsage(key)
+	if got.CPUMilli != 100 || got.MemBytes != 1024 {
+		t.Fatalf("dt=0 不应更新 EWMA: %+v", got)
+	}
+
+	// 消失超过 15 分钟的 Pod 在下一轮写入时被清理。
+	s.ObservePods("n1", nil, base.Add(PodUsageGCAfter+time.Minute))
+	if _, _, ok := s.PodUsage(key); ok {
+		t.Fatal("超过 GC 窗口的 Pod 应被清理")
+	}
+
+	snapshot := s.Snapshot()
+	if len(snapshot) != 0 {
+		t.Fatalf("快照应为空，实际 %d", len(snapshot))
 	}
 }

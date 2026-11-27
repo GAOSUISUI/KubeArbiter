@@ -46,6 +46,7 @@ HTTP /api/v1/* ──► observe.Recorder ──1min──► slo_windows ──
 | `POD_PENDING_LONG` | 未调度且创建超过 5 分钟 | WARN |
 | `POD_READINESS_FAIL` | Running 且 Ready=False 超过 3 分钟 | WARN |
 | `QUOTA_NEAR` | 租户 requested / quota ≥ 0.9 | WARN；≥ 1 为 CRITICAL |
+| `NODE_FORECAST_EXHAUST` | 节点负载线性外推预计 30 分钟内达到 allocatable 90%，且 R² ≥ 0.6、当前占比 ≥ 0.6 | WARN（仅建议，不触发自动执行） |
 
 ### 生命周期
 

@@ -325,6 +325,75 @@ export interface MonitorOverview {
   incidents: { open: number; critical: number; warn: number; info: number }
 }
 
+// ---------- 负载预测 ----------
+
+export interface ForecastPoint {
+  ts: string
+  cpu_milli: number
+  mem_bytes: number
+}
+
+export interface ForecastBandPoint {
+  ts: string
+  cpu_upper: number
+  cpu_lower: number
+  mem_upper: number
+  mem_lower: number
+}
+
+export interface NodeForecast {
+  name: string
+  confidence: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH'
+  usage_ratio: number
+  r2: number
+  slope_cpu_per_min: number
+  slope_mem_per_min: number
+  sample_span_seconds: number
+  time_to_full_90_seconds: number | null
+  time_to_full_100_seconds: number | null
+  allocatable: Resources
+  history: ForecastPoint[]
+  prediction: ForecastPoint[]
+  band: ForecastBandPoint[]
+}
+
+export interface CapacityForecast {
+  taken_at: string
+  horizon: string
+  degraded: boolean
+  confidence: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH'
+  sample_span_seconds: number
+  nodes: NodeForecast[]
+  cluster: NodeForecast | null
+}
+
+export interface RightsizingResources {
+  cpu_milli: number
+  mem_bytes: number
+}
+
+export interface RightsizingItem {
+  namespace: string
+  name: string
+  node: string
+  tenant?: string
+  requests: RightsizingResources
+  usage: RightsizingResources | null
+  cpu_ratio: number | null
+  mem_ratio: number | null
+  classification: 'OK' | 'OVER_PROVISIONED' | 'UNDER_PROVISIONED' | 'UNKNOWN'
+  recommendation: RightsizingResources | null
+  recommend_note: string
+}
+
+export interface RightsizingReport {
+  taken_at: string
+  items: RightsizingItem[]
+  over_provisioned: number
+  under_provisioned: number
+  unknown: number
+}
+
 // ---------- SLO ----------
 
 export interface SLODefinitionInput {
@@ -525,6 +594,9 @@ export const api = {
   monitorOverview: () => call<MonitorOverview>('/api/v1/monitor/overview'),
   monitorSeries: (window = '1h') =>
     call<MonitorSeries>('/api/v1/monitor/series' + query({ window })),
+  forecastCapacity: (horizon = '30m') =>
+    call<CapacityForecast>('/api/v1/forecast/capacity' + query({ horizon })),
+  rightsizing: () => call<RightsizingReport>('/api/v1/rightsizing'),
 
   // ---------- SLO ----------
   sloList: () => call<SLOStatus[]>('/api/v1/slo'),
@@ -623,7 +695,8 @@ export const INCIDENT_LABELS: Record<string, string> = {
   METRICS_STALE: '指标过期',
   POD_PENDING_LONG: '调度等待过久',
   POD_READINESS_FAIL: 'Pod 未就绪',
-  QUOTA_NEAR: '配额临界'
+  QUOTA_NEAR: '配额临界',
+  NODE_FORECAST_EXHAUST: '预测资源耗尽'
 }
 
 export function severityTone(severity: string) {

@@ -68,6 +68,9 @@ func TestDiagnosticsNodeAndPodState(t *testing.T) {
 	if p.Ready || p.StartTime.IsZero() || p.ReadySince.IsZero() {
 		t.Fatalf("就绪/启动时间解析错误: %+v", p)
 	}
+	if p.Requests.CPUMilli != 500 || p.Requests.MemBytes != 256*1024*1024 {
+		t.Fatalf("Request 汇总错误: %+v", p.Requests)
+	}
 }
 
 func TestDiagnosticsSkipsSucceededPods(t *testing.T) {

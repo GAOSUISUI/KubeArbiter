@@ -12,6 +12,7 @@ export default createRouter({
     { path: '/nodes', component: () => import('./views/NodesView.vue'), meta: { title: '节点与容量' } },
     { path: '/tasks', component: () => import('./views/TasksView.vue'), meta: { title: '任务与审计' } },
     { path: '/monitor', component: () => import('./views/MonitorView.vue'), meta: { title: '监控大盘' } },
+    { path: '/forecast', component: () => import('./views/ForecastView.vue'), meta: { title: '预测与容量' } },
     { path: '/incidents', component: () => import('./views/IncidentsView.vue'), meta: { title: '异常事件' } },
     { path: '/slo', component: () => import('./views/SloView.vue'), meta: { title: 'SLO 治理' } }
   ]

@@ -60,6 +60,8 @@ type Deps struct {
 	Observer func(context.Context) (capacity.Diagnostics, error)
 	// Metrics 提供节点原始指标历史；未接入指标采集时为 nil。
 	Metrics MetricHistory
+	// PodUsage 提供per-pod 实际用量；未接入采集时为 nil，rightsizing 返回 unknown。
+	PodUsage PodUsageReader
 	// Incidents 读取事件与诊断；为空时回退到内存实现。
 	Incidents aiops.Reader
 	// IncidentWriter 写入事件与诊断；为空时回退到内存实现。
@@ -169,6 +171,8 @@ func NewRouter(d Deps) *gin.Engine {
 	v1.POST("/diagnosis/run", runDiagnosis(d))
 	v1.GET("/monitor/overview", monitorOverview(d))
 	v1.GET("/monitor/series", monitorSeries(d))
+	v1.GET("/forecast/capacity", forecastCapacity(d))
+	v1.GET("/rightsizing", rightsizing(d))
 
 	// 准入 webhook 正式路径走独立端口的 TLS 服务，这里同二进制内也注册一份，便于本地调试与单测。
 	r.POST("/webhook/mutate-pods", webhookMutate(d))

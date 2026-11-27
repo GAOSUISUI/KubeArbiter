@@ -14,16 +14,19 @@ const DefaultInterval = 30 * time.Second
 // ResolveAfterMisses 是自动恢复所需的连续未命中次数，避免瞬时抖动造成事件反复开关。
 const ResolveAfterMisses = 2
 
-// Source 提供检测所需的只读数据。
+// Source 提供检测所需的只读数据。Forecasts 可返回 nil，表示预测不可用。
 type Source interface {
 	Diagnostics(ctx context.Context) (capacity.Diagnostics, error)
 	Tenants(ctx context.Context, diag capacity.Diagnostics) ([]TenantInput, error)
+	Forecasts() []NodeForecastSummary
 }
 
 // SourceFuncs 让调用方用闭包装配 Source，避免为适配器新增类型。
+// ForecastsFn 可为 nil：预测数据不可用时预测规则自然跳过。
 type SourceFuncs struct {
 	DiagnosticsFn func(ctx context.Context) (capacity.Diagnostics, error)
 	TenantsFn     func(ctx context.Context, diag capacity.Diagnostics) ([]TenantInput, error)
+	ForecastsFn   func() []NodeForecastSummary
 }
 
 func (s SourceFuncs) Diagnostics(ctx context.Context) (capacity.Diagnostics, error) {
@@ -38,6 +41,13 @@ func (s SourceFuncs) Tenants(ctx context.Context, diag capacity.Diagnostics) ([]
 		return nil, nil
 	}
 	return s.TenantsFn(ctx, diag)
+}
+
+func (s SourceFuncs) Forecasts() []NodeForecastSummary {
+	if s.ForecastsFn == nil {
+		return nil
+	}
+	return s.ForecastsFn()
 }
 
 // Detector 周期扫描集群观察结果，维护事件的生命周期。
@@ -111,6 +121,7 @@ func (d *Detector) Scan(ctx context.Context) error {
 		Pods:      diag.Pods,
 		Tenants:   tenants,
 		MetricsAt: diag.MetricsAt,
+		Forecasts: d.source.Forecasts(),
 	})
 
 	open, err := d.store.ListIncidents(ctx, Filter{Status: "OPEN"})

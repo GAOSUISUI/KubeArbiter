@@ -23,6 +23,7 @@ servers:
 tags:
   - name: auth
   - name: capacity
+  - name: forecast
   - name: tenants
   - name: placement
   - name: policies
@@ -181,6 +182,57 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # ---------------------------------------------------------------- forecast
+  /api/v1/forecast/capacity:
+    get:
+      tags: [forecast]
+      summary: 负载预测与资源耗尽预警
+      description: 按节点/集群对 CPU 与内存做线性外推，给出预测点、置信带与耗尽时间估计。数据不足时 degraded=true 且不返回预测点。
+      parameters:
+        - name: horizon
+          in: query
+          schema: { type: string, enum: [15m, 30m, 1h, 3h], default: 30m }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CapacityForecast'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/rightsizing:
+    get:
+      tags: [forecast]
+      summary: 配额调优建议（request vs 实际用量）
+      description: 对比 per-pod request 与 EWMA 用量，仅输出建议，绝不自动修改配额。缺用量的 Pod 标记为 UNKNOWN。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RightsizingReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   # ---------------------------------------------------------------- tenants
   /api/v1/tenants:
@@ -1389,7 +1441,7 @@ components:
 
     IncidentType:
       type: string
-      enum: [CRASH_LOOP, IMAGE_PULL_BACKOFF, READINESS_FAIL, OOM_KILLED, DOWNSTREAM_TIMEOUT, EMPTY_ENDPOINTS, CONFIG_ERROR, NODE_NOT_READY, NODE_PRESSURE, NODE_HIGH_USAGE, METRICS_STALE, POD_PENDING_LONG, POD_READINESS_FAIL, QUOTA_NEAR]
+      enum: [CRASH_LOOP, IMAGE_PULL_BACKOFF, READINESS_FAIL, OOM_KILLED, DOWNSTREAM_TIMEOUT, EMPTY_ENDPOINTS, CONFIG_ERROR, NODE_NOT_READY, NODE_PRESSURE, NODE_HIGH_USAGE, METRICS_STALE, POD_PENDING_LONG, POD_READINESS_FAIL, QUOTA_NEAR, NODE_FORECAST_EXHAUST]
 
     Severity:
       type: string
@@ -2115,6 +2167,106 @@ components:
             critical: { type: integer }
             warn: { type: integer }
             info: { type: integer }
+
+    # ------------------------------------------------ 负载预测
+    ForecastPoint:
+      type: object
+      required: [ts, cpu_milli, mem_bytes]
+      properties:
+        ts: { type: string, format: date-time }
+        cpu_milli: { type: number }
+        mem_bytes: { type: number }
+
+    ForecastBandPoint:
+      type: object
+      required: [ts, cpu_upper, cpu_lower, mem_upper, mem_lower]
+      properties:
+        ts: { type: string, format: date-time }
+        cpu_upper: { type: number }
+        cpu_lower: { type: number }
+        mem_upper: { type: number }
+        mem_lower: { type: number }
+
+    NodeForecast:
+      type: object
+      required: [name, confidence, usage_ratio, r2, slope_cpu_per_min, slope_mem_per_min, sample_span_seconds, allocatable, history, prediction, band]
+      properties:
+        name: { type: string }
+        confidence: { type: string, enum: [NONE, LOW, MEDIUM, HIGH] }
+        usage_ratio: { type: number }
+        r2: { type: number }
+        slope_cpu_per_min: { type: number }
+        slope_mem_per_min: { type: number }
+        sample_span_seconds: { type: integer, format: int64 }
+        time_to_full_90_seconds: { type: integer, format: int64, nullable: true }
+        time_to_full_100_seconds: { type: integer, format: int64, nullable: true }
+        allocatable: { $ref: '#/components/schemas/ResourcePair' }
+        history:
+          type: array
+          items: { $ref: '#/components/schemas/ForecastPoint' }
+        prediction:
+          type: array
+          items: { $ref: '#/components/schemas/ForecastPoint' }
+        band:
+          type: array
+          items: { $ref: '#/components/schemas/ForecastBandPoint' }
+
+    CapacityForecast:
+      type: object
+      required: [taken_at, horizon, degraded, confidence, sample_span_seconds, nodes, cluster]
+      properties:
+        taken_at: { type: string, format: date-time }
+        horizon: { type: string }
+        degraded: { type: boolean }
+        confidence: { type: string, enum: [NONE, LOW, MEDIUM, HIGH] }
+        sample_span_seconds: { type: integer, format: int64 }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/NodeForecast' }
+        cluster:
+          $ref: '#/components/schemas/NodeForecast'
+
+    # ------------------------------------------------ 配额调优建议
+    RightsizingResources:
+      type: object
+      required: [cpu_milli, mem_bytes]
+      properties:
+        cpu_milli: { type: integer, format: int64 }
+        mem_bytes: { type: integer, format: int64 }
+
+    RightsizingItem:
+      type: object
+      required: [namespace, name, node, requests, usage, cpu_ratio, mem_ratio, classification, recommendation, recommend_note]
+      properties:
+        namespace: { type: string }
+        name: { type: string }
+        node: { type: string }
+        tenant: { type: string }
+        requests: { $ref: '#/components/schemas/RightsizingResources' }
+        usage:
+          allOf:
+            - $ref: '#/components/schemas/RightsizingResources'
+            - nullable: true
+        cpu_ratio: { type: number, nullable: true }
+        mem_ratio: { type: number, nullable: true }
+        classification: { type: string, enum: [OK, OVER_PROVISIONED, UNDER_PROVISIONED, UNKNOWN] }
+        recommendation:
+          allOf:
+            - $ref: '#/components/schemas/RightsizingResources'
+            - nullable: true
+        recommend_note: { type: string }
+
+    RightsizingReport:
+      type: object
+      required: [taken_at, items, over_provisioned, under_provisioned, unknown]
+      properties:
+        taken_at: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RightsizingItem' }
+        over_provisioned: { type: integer }
+        under_provisioned: { type: integer }
+        unknown: { type: integer }
 
     # ------------------------------------------------ 容量建议
     CurvePoint:

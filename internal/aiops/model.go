@@ -23,7 +23,25 @@ const (
 	IncidentPodPendingLong   IncidentType = "POD_PENDING_LONG"
 	IncidentPodReadinessFail IncidentType = "POD_READINESS_FAIL"
 	IncidentQuotaNear        IncidentType = "QUOTA_NEAR"
+
+	// IncidentNodeForecastExhaust 是 P2 预测类事件：节点按当前趋势预计
+	// 在预警窗口内达到容量上限。仅 WARN 建议，绝不触发自动执行。
+	IncidentNodeForecastExhaust IncidentType = "NODE_FORECAST_EXHAUST"
 )
+
+// NodeForecastSummary 是预测规则需要的最小摘要（来自 forecast 包的拟合结果）。
+type NodeForecastSummary struct {
+	Name string
+	// TimeToFull90 为 nil 表示不适用（斜率非正、占比低或数据不足）。
+	TimeToFull90 *time.Duration
+	R2           float64
+	UsageRatio   float64
+}
+
+// ForecastProvider 提供各节点的预测摘要；返回 nil 或空切片表示预测不可用。
+type ForecastProvider interface {
+	Forecasts() []NodeForecastSummary
+}
 
 // Severity 沿用契约的三档。
 type Severity string

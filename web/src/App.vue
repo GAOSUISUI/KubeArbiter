@@ -81,6 +81,7 @@ const nav = [
   { path: '/nodes', label: '节点与容量' },
   { path: '/tasks', label: '任务与审计' },
   { path: '/monitor', label: '监控大盘' },
+  { path: '/forecast', label: '预测与容量' },
   { path: '/incidents', label: '异常事件' },
   { path: '/slo', label: 'SLO 治理' }
 ]
@@ -151,6 +152,7 @@ const SHORTCUTS: Record<string, string> = {
   n: '/nodes',
   t: '/tasks',
   m: '/monitor',
+  c: '/forecast',
   e: '/incidents',
   l: '/slo'
 }

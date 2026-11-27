@@ -20,6 +20,7 @@ import (
 	"github.com/kubearbiter/kubearbiter/internal/api"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/internal/decision/metrics"
+	"github.com/kubearbiter/kubearbiter/internal/forecast"
 	"github.com/kubearbiter/kubearbiter/internal/observe"
 	"github.com/kubearbiter/kubearbiter/internal/slo"
 	"github.com/kubearbiter/kubearbiter/internal/store/postgres"
@@ -48,7 +49,7 @@ func main() {
 	deps.Recorder = recorder
 
 	// 有可用 kubeconfig 时才连集群；连不上不阻塞启动，改为在 /healthz 暴露 k8s 依赖不可用。
-	if view, usage, err := startClusterView(ctx); err != nil {
+	if view, usage, podUsage, err := startClusterView(ctx); err != nil {
 		log.Printf("集群视图未启用: %v", err)
 	} else {
 		deps.Snapshotter = func(context.Context) (capacity.Snapshot, error) {
@@ -58,6 +59,7 @@ func main() {
 			return view.Diagnostics(time.Now())
 		}
 		deps.Metrics = usage
+		deps.PodUsage = podUsage
 		deps.TenantOfNamespace = view.NamespaceTenant
 		deps.Checks = map[string]func(context.Context) error{
 			"k8s": func(context.Context) error {
@@ -120,6 +122,9 @@ func main() {
 			TenantsFn: func(ctx context.Context, diag capacity.Diagnostics) ([]aiops.TenantInput, error) {
 				return api.TenantInputs(ctx, deps.TenantCatalog, diag), nil
 			},
+			ForecastsFn: func() []aiops.NodeForecastSummary {
+				return nodeForecasts(deps)
+			},
 		}
 		go aiops.NewDetector(incidentStore, source, interval, log.Printf).Run(ctx)
 	}
@@ -167,31 +172,66 @@ func main() {
 	log.Print("arbiter-api stopped")
 }
 
+// nodeForecasts 为检测规则计算各节点的负载外推摘要。
+// 任一数据源缺失时返回 nil，预测规则自然跳过；调用方每轮检测调用一次。
+func nodeForecasts(deps api.Deps) []aiops.NodeForecastSummary {
+	if deps.Metrics == nil || deps.Observer == nil {
+		return nil
+	}
+	diag, err := deps.Observer(context.Background())
+	if err != nil {
+		return nil
+	}
+	now := time.Now()
+	from := now.Add(-deps.Metrics.Retention())
+	out := make([]aiops.NodeForecastSummary, 0, len(diag.Nodes))
+	for _, nd := range diag.Nodes {
+		series := deps.Metrics.Series(nd.Name, from, now)
+		if len(series) == 0 {
+			continue
+		}
+		nf := forecast.NodeForecastFor(nd.Name, series, nd.Allocatable, now)
+		// 取两维中较差的 R²：耗尽时间由先到限的维度决定，保守评估。
+		r2 := nf.CPU.R2
+		if nf.Mem.R2 < r2 {
+			r2 = nf.Mem.R2
+		}
+		out = append(out, aiops.NodeForecastSummary{
+			Name:         nf.Name,
+			TimeToFull90: nf.TimeToFull90,
+			R2:           r2,
+			UsageRatio:   nf.UsageRatio,
+		})
+	}
+	return out
+}
+
 // startClusterView 按 KUBECONFIG / ~/.kube/config 建立 clientset，并异步启动 informer。
 // 返回的 View 在 ctx 取消后停止。
-func startClusterView(ctx context.Context) (*capacity.View, *metrics.Store, error) {
+func startClusterView(ctx context.Context) (*capacity.View, *metrics.Store, *metrics.PodUsageStore, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	view := capacity.NewView(client, 5*time.Minute)
 	// 指标采集独立于 informer：即使 kubelet 暂时不可达，决策仍会带着
 	// METRICS_MISSING 警告降级运行，而不是阻塞启动。
 	usage := metrics.NewStore()
+	podUsage := metrics.NewPodUsageStore()
 	view.UseMetrics(usage)
-	go metrics.NewCollector(client, usage).Run(ctx)
+	go metrics.NewCollector(client, usage, podUsage).Run(ctx)
 	go func() {
 		if err := view.Run(ctx); err != nil {
 			log.Printf("informer 停止: %v", err)
 		}
 	}()
-	return view, usage, nil
+	return view, usage, podUsage, nil
 }
 
 // ensureSelfSLO 保证 arbiter-api 自身有一个可用的可用性 SLO；不覆盖已有定义。
