@@ -17,7 +17,7 @@
 | Kubernetes 集群（kubeadm） | v1.37.2，3 节点 | 2026-11-23 | `kubectl get nodes` → ka-cp1/ka-w1/ka-w2 均 Ready，v1.37.2 |
 | containerd | 2.2.1 | 2026-11-23 | 节点 `CONTAINER-RUNTIME` 列 → `containerd://2.2.1` |
 | Flannel | v0.28.11 | 2026-11-23 | `kubectl -n kube-flannel get ds` → 3/3 READY |
-| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.9.5`（单层 OCI，内嵌 Vue 控制台 + AIOps 底座 + 负载预测与配额调优，manifest `sha256:6d8521e11c360ca9b5fad12941498baeed02a2227663a14a8337044b7c104a5d`） | 2026-11-27 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见；`GET /healthz` → `{"status":"ok"}`；`GET /api/v1/forecast/capacity?horizon=30m` 与 `/api/v1/rightsizing` 返回 `code:0`；部署前已执行 `db/migrations/0004_forecast_type.sql`，`incidents_type_check` 已含 `NODE_FORECAST_EXHAUST` |
+| arbiter-api 镜像 | `docker.io/kubearbiter/arbiter-api:0.9.6`（单层 OCI，内嵌 Vue 控制台 + AIOps 底座 + 负载预测 + GPU/gang 调度，manifest `sha256:34f1916bf4189cb506af6ffc13f91236a0ddcdc4bbb80c639cf2d19f0e201d15`） | 2026-11-27 | 离线拼装后 `ctr -n k8s.io images import`，`ctr images ls` 可见；`GET /healthz` → `{"status":"ok"}`；capacity overview 聚合 GPU=8 卡（ka-w2/ka-w3 各 patch 4 卡假 GPU）；E2E 四类模拟（普通 GPU/gang 可行/gang 不可行/GPU 配额超限）全部符合预期；部署前已执行 `db/migrations/0004_forecast_type.sql` 与 `0005_gpu_quota.sql` |
 | 前端构建链 | Node 22.13.0（便携版）+ Vite 6 + Vue 3 + ECharts | 2026-11-23 | `npm run build` 输出到 `internal/webui/dist`，随 `go build` 嵌入二进制；路由懒加载 + ECharts 按需注册，构建产物从单包 1.25 MB 拆为入口 20 kB / vendor 110 kB / echarts 605 kB |
 
 > Helm 说明：winget 默认装到 v4.3.2，与冻结包"Helm 3.x 稳定版"冲突，已卸载并改装 v3.20.0。

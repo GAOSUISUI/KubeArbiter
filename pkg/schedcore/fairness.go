@@ -54,7 +54,7 @@ type Plan struct {
 
 // Arbitrate 按指定分配器计算租户分配方案。
 func Arbitrate(capacity Resources, tenants []TenantDemand, allocator Allocator) (Plan, error) {
-	if capacity.CPUMilli < 0 || capacity.MemBytes < 0 {
+	if capacity.CPUMilli < 0 || capacity.MemBytes < 0 || capacity.GPU < 0 {
 		return Plan{}, ErrNegativeCapacity
 	}
 
@@ -71,13 +71,14 @@ func Arbitrate(capacity Resources, tenants []TenantDemand, allocator Allocator) 
 		// 阶段一：保底。容量不足以覆盖所有 min 时判定为不可行并给出缺口。
 		drfAllocate(capacity, tenants, xs, true)
 		for i := range tenants {
-			if tenants[i].Min.CPUMilli > xs[i].CPUMilli || tenants[i].Min.MemBytes > xs[i].MemBytes {
+			if tenants[i].Min.CPUMilli > xs[i].CPUMilli || tenants[i].Min.MemBytes > xs[i].MemBytes || tenants[i].Min.GPU > xs[i].GPU {
 				infeasible = true
 				shortfalls = append(shortfalls, Shortfall{
 					TenantID: tenants[i].ID,
 					Missing: Resources{
 						CPUMilli: tenants[i].Min.CPUMilli - xs[i].CPUMilli,
 						MemBytes: tenants[i].Min.MemBytes - xs[i].MemBytes,
+						GPU:      tenants[i].Min.GPU - xs[i].GPU,
 					},
 				})
 			}
@@ -134,6 +135,10 @@ func Arbitrate(capacity Resources, tenants []TenantDemand, allocator Allocator) 
 		util += ratio(used.MemBytes, capacity.MemBytes)
 		dims++
 	}
+	if capacity.GPU > 0 {
+		util += ratio(used.GPU, capacity.GPU)
+		dims++
+	}
 	if dims > 0 {
 		util /= float64(dims)
 	}
@@ -174,6 +179,7 @@ func fifoAllocate(capacity Resources, tenants []TenantDemand, xs []Resources) {
 		take := Resources{
 			CPUMilli: min64(want.CPUMilli, remaining.CPUMilli),
 			MemBytes: min64(want.MemBytes, remaining.MemBytes),
+			GPU:      min64(want.GPU, remaining.GPU),
 		}
 		take = nonNegative(take)
 		xs[item.idx] = take
@@ -197,6 +203,7 @@ func hardQuotaAllocate(capacity Resources, tenants []TenantDemand, xs []Resource
 		take := Resources{
 			CPUMilli: min64(want.CPUMilli, remaining.CPUMilli),
 			MemBytes: min64(want.MemBytes, remaining.MemBytes),
+			GPU:      min64(want.GPU, remaining.GPU),
 		}
 		take = nonNegative(take)
 		xs[i] = take
@@ -238,6 +245,7 @@ func drfAllocate(capacity Resources, tenants []TenantDemand, xs []Resources, use
 			x := Resources{
 				CPUMilli: floor64(level * weight * float64(capacity.CPUMilli)),
 				MemBytes: floor64(level * weight * float64(capacity.MemBytes)),
+				GPU:      floor64(level * weight * float64(capacity.GPU)),
 			}
 			x = maxResources(x, floors[i])
 			x = minResources(x, targets[i])
@@ -265,6 +273,9 @@ func drfAllocate(capacity Resources, tenants []TenantDemand, xs []Resources, use
 		}
 		if capacity.MemBytes > 0 {
 			high = math.Max(high, float64(targets[i].MemBytes)/(weight*float64(capacity.MemBytes)))
+		}
+		if capacity.GPU > 0 {
+			high = math.Max(high, float64(targets[i].GPU)/(weight*float64(capacity.GPU)))
 		}
 	}
 	high *= 2
@@ -297,11 +308,11 @@ func tenantTarget(t TenantDemand, useMin bool) Resources {
 }
 
 func minResources(a, b Resources) Resources {
-	return Resources{CPUMilli: min64(a.CPUMilli, b.CPUMilli), MemBytes: min64(a.MemBytes, b.MemBytes)}
+	return Resources{CPUMilli: min64(a.CPUMilli, b.CPUMilli), MemBytes: min64(a.MemBytes, b.MemBytes), GPU: min64(a.GPU, b.GPU)}
 }
 
 func maxResources(a, b Resources) Resources {
-	return Resources{CPUMilli: max64(a.CPUMilli, b.CPUMilli), MemBytes: max64(a.MemBytes, b.MemBytes)}
+	return Resources{CPUMilli: max64(a.CPUMilli, b.CPUMilli), MemBytes: max64(a.MemBytes, b.MemBytes), GPU: max64(a.GPU, b.GPU)}
 }
 
 func nonNegative(r Resources) Resources {
@@ -310,6 +321,9 @@ func nonNegative(r Resources) Resources {
 	}
 	if r.MemBytes < 0 {
 		r.MemBytes = 0
+	}
+	if r.GPU < 0 {
+		r.GPU = 0
 	}
 	return r
 }

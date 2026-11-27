@@ -11,6 +11,10 @@ import (
 
 // canonicalSnapshot 是参与哈希的字段子集：剔除 TakenAt 这类每次取数都会变的字段，
 // 这样"集群状态没变"就得到同一个哈希，快照去重与审计比对才有意义。
+//
+// P3 起快照哈希语义含 GPU 维：Resources 增加了 GPU 字段（nvidia.com/gpu），
+// 它随 Nodes 的 Allocatable/Requested 一并参与序列化。集群打了 GPU 资源后
+// 哈希变化是正确语义（集群状态确实变了）；0-GPU 集群所有节点 GPU=0，哈希不变。
 type canonicalSnapshot struct {
 	Nodes       []capacity.NodeView
 	PendingPods []capacity.PodView

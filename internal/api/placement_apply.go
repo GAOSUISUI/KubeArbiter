@@ -72,6 +72,13 @@ func applyPlacementCore(c *gin.Context, d Deps, raw []byte) (int, []byte, *apiEr
 			Field: "decision_id", Reason: "决策没有可落地的候选节点",
 		})
 	}
+	// P3：gang 决策可能分布到多个节点；当前执行器只支持单节点 nodeAffinity 注入，
+	// 多节点 assignments 一律业务拒绝（批量注入留待后续阶段）。
+	if len(decision.Assignments) > 1 {
+		return 0, nil, errBusinessRejected("GANG_NOT_EXECUTABLE", ErrorDetail{
+			Field: "decision_id", Reason: "gang 决策分布到多个节点，当前执行器仅支持单节点注入，暂不能落地执行",
+		})
+	}
 
 	// 快照已变化时决策不可信，必须重新模拟（契约 42201 决策已过期）。
 	if d.Snapshotter == nil {

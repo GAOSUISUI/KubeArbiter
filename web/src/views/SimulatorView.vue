@@ -25,6 +25,11 @@
           <label>副本数<input v-model.number="workload.replicas" type="number" min="1" /></label>
           <label>CPU (m)<input v-model.number="workload.cpu" type="number" min="0" step="50" /></label>
           <label>内存 (MiB)<input v-model.number="workload.mem" type="number" min="0" step="64" /></label>
+          <label>GPU 卡/副本<input v-model.number="workload.gpu" type="number" min="0" step="1" /></label>
+        </div>
+        <div class="field-row">
+          <label class="auto"><input v-model="gangOn" type="checkbox" /> gang 成组放置</label>
+          <label v-if="gangOn">最少可调度副本<input v-model.number="gangMin" type="number" min="1" /></label>
         </div>
         <div class="field-row">
           <label>
@@ -124,6 +129,19 @@
               metrics {{ result.evidence?.metrics_known ? '已知' : '缺失' }}
             </span>
             <span class="chip">snapshot {{ shortID(result.snapshot_hash) }}</span>
+            <span v-if="result.evidence?.gang_min_available" class="chip info">
+              gang ≥ {{ result.evidence.gang_min_available }}
+            </span>
+          </div>
+          <div v-if="result.assignments?.length" class="chips-row">
+            <span v-for="a in result.assignments" :key="a.node" class="chip ok">
+              {{ a.node }} × {{ a.replicas }} 副本
+            </span>
+          </div>
+          <div v-if="result.status !== 'OK' && result.evidence?.total_feasible != null" class="chips-row">
+            <span class="chip warn">
+              整组不可行：可行总量 {{ result.evidence.total_feasible }} &lt; 最少要求 {{ result.evidence.min_available }}
+            </span>
           </div>
           <div v-if="result.warnings?.length" class="chips-row">
             <span v-for="w in result.warnings" :key="w" class="chip warn">{{ w }}</span>
@@ -405,8 +423,11 @@ const workload = reactive({
   namespace: saved.workload?.namespace ?? 'team-a',
   replicas: saved.workload?.replicas ?? 1,
   cpu: saved.workload?.cpu ?? 500,
-  mem: saved.workload?.mem ?? 256
+  mem: saved.workload?.mem ?? 256,
+  gpu: saved.workload?.gpu ?? 0
 })
+const gangOn = ref(saved.gangOn ?? false)
+const gangMin = ref(saved.gangMin ?? 0)
 const weightsPct = reactive<Record<WeightKey, number>>({ ...DEFAULT_WEIGHTS })
 WEIGHT_KEYS.forEach(k => {
   const v = saved.weightsPct?.[k]
@@ -443,6 +464,8 @@ function persist() {
     custom: custom.value,
     auto: auto.value,
     view: view.value,
+    gangOn: gangOn.value,
+    gangMin: gangMin.value,
     history: history.value.slice(0, 8),
     baselineId: baselineId.value,
     compareIds: compareIds.value
@@ -468,10 +491,12 @@ interface Template {
   replicas: number
   cpu: number
   mem: number
+  gpu?: number
 }
 
 const TEMPLATES: Template[] = [
   { key: 'web', label: 'Web 服务', desc: '3 副本 · 500m / 512Mi', name: 'web-api', namespace: 'team-a', replicas: 3, cpu: 500, mem: 512 },
+  { key: 'ai-train', label: 'AI 训练（gang）', desc: '4 副本 · 1C / 2Gi / 1 卡', name: 'ai-train', namespace: 'team-a', replicas: 4, cpu: 1000, mem: 2048, gpu: 1 },
   { key: 'batch', label: '批处理任务', desc: '1 副本 · 2C / 4Gi', name: 'batch-job', namespace: 'team-b', replicas: 1, cpu: 2000, mem: 4096 },
   { key: 'cache', label: '缓存节点', desc: '1 副本 · 1C / 1Gi', name: 'redis-cache', namespace: 'team-a', replicas: 1, cpu: 1000, mem: 1024 },
   { key: 'sidecar', label: '小 Sidecar', desc: '2 副本 · 100m / 64Mi', name: 'sidecar', namespace: 'team-c', replicas: 2, cpu: 100, mem: 64 }
@@ -646,11 +671,18 @@ async function run() {
         name: workload.name,
         namespace: workload.namespace,
         replicas: workload.replicas,
-        requests: { cpu_milli: workload.cpu, mem_bytes: workload.mem * 1024 * 1024 }
+        requests: {
+          cpu_milli: workload.cpu,
+          mem_bytes: workload.mem * 1024 * 1024,
+          gpu: Math.max(0, Math.round(workload.gpu || 0))
+        }
       },
       tenant_id: tenantId.value || undefined,
       policy_id: policyId.value,
-      weights: custom.value ? normalized() : undefined
+      weights: custom.value ? normalized() : undefined,
+      gang: gangOn.value
+        ? { min_available: Math.max(1, Math.round(gangMin.value || workload.replicas)) }
+        : undefined
     })
     result.value = next
     applyState.msg = ''
@@ -679,6 +711,11 @@ function applyTemplate(t: Template) {
   workload.replicas = t.replicas
   workload.cpu = t.cpu
   workload.mem = t.mem
+  workload.gpu = t.gpu ?? 0
+  if (t.key === 'ai-train') {
+    gangOn.value = true
+    gangMin.value = t.replicas
+  }
   schedulePersist()
   toastInfo(`已应用模板：${t.label}`)
 }

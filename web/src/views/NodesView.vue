@@ -58,6 +58,7 @@
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px">
           <strong>{{ n.name }}</strong>
           <span class="chip" :class="n.ready ? 'ok' : 'bad'">{{ n.ready ? 'Ready' : 'NotReady' }}</span>
+          <span v-if="n.allocatable.gpu > 0" class="chip info">GPU {{ n.allocatable.gpu }} 卡</span>
           <span style="flex: 1"></span>
           <span class="muted small">{{ n.pod_count }} pods</span>
         </div>
@@ -111,6 +112,8 @@
           <div class="kv">
             <span class="k">可分配 CPU</span><span>{{ cores(current.allocatable.cpu_milli) }} C</span>
             <span class="k">可分配内存</span><span>{{ gib(current.allocatable.mem_bytes) }} GiB</span>
+            <span v-if="current.allocatable.gpu > 0" class="k">可分配 GPU</span>
+            <span v-if="current.allocatable.gpu > 0">{{ current.allocatable.gpu }} 卡</span>
             <span class="k">已请求 CPU</span><span>{{ cores(current.requested.cpu_milli) }} C</span>
             <span class="k">已请求内存</span><span>{{ gib(current.requested.mem_bytes) }} GiB</span>
             <span class="k">请求率</span>
@@ -202,8 +205,8 @@ const totalUsage = computed(() =>
   nodes.value
     .filter(n => n.usage_known)
     .reduce(
-      (a, n) => ({ cpu_milli: a.cpu_milli + n.usage.cpu_milli, mem_bytes: a.mem_bytes + n.usage.mem_bytes }),
-      { cpu_milli: 0, mem_bytes: 0 }
+      (a, n) => ({ cpu_milli: a.cpu_milli + n.usage.cpu_milli, mem_bytes: a.mem_bytes + n.usage.mem_bytes, gpu: a.gpu + n.usage.gpu }),
+      { cpu_milli: 0, mem_bytes: 0, gpu: 0 }
     )
 )
 const metricsAge = computed(() => ageSeconds(metricsAt.value))

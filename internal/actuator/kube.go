@@ -162,6 +162,10 @@ func parsePlacementParams(params map[string]any) (workloadRef, error) {
 	if ref.Node == "" {
 		return ref, errors.New("任务参数缺少 chosen_node")
 	}
+	// 防御：多节点 gang 决策不允许进入单节点执行器（正常应在 applyPlacement 阶段被拒）。
+	if list, ok := params["assignments"].([]any); ok && len(list) > 1 {
+		return ref, errors.New("gang 决策分布到多个节点，单节点执行器拒绝执行")
+	}
 	return ref, nil
 }
 

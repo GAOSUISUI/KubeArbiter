@@ -240,3 +240,138 @@ func TestSimulateUnknownTenantReturns404(t *testing.T) {
 		t.Fatalf("期望 40401，实际 %v", payload["code"])
 	}
 }
+
+// gangFixture 提供两台各 4 卡 GPU 的节点，专供 gang 用例。
+func gangFixture(t *testing.T) *ginEngine {
+	t.Helper()
+	weights, err := schedcore.PresetWeights(schedcore.Balanced)
+	if err != nil {
+		t.Fatalf("预置权重不可用: %v", err)
+	}
+	store := NewMemoryStore()
+	store.AddPolicy(Policy{ID: testPolicyID, Name: "balanced", Strategy: schedcore.Balanced, Weights: weights, IsDefault: true})
+
+	snap := capacity.Snapshot{
+		TakenAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC),
+		Nodes: []capacity.NodeView{
+			{
+				Name:        "gpu-a",
+				Ready:       true,
+				Allocatable: schedcore.Resources{CPUMilli: 8000, MemBytes: 16 << 30, GPU: 4},
+				Labels:      map[string]string{"kubernetes.io/hostname": "gpu-a"},
+				HostPorts:   map[int32]string{},
+				Topology:    map[string]string{"kubernetes.io/hostname": "gpu-a"},
+			},
+			{
+				Name:        "gpu-b",
+				Ready:       true,
+				Allocatable: schedcore.Resources{CPUMilli: 8000, MemBytes: 16 << 30, GPU: 4},
+				Labels:      map[string]string{"kubernetes.io/hostname": "gpu-b"},
+				HostPorts:   map[int32]string{},
+				Topology:    map[string]string{"kubernetes.io/hostname": "gpu-b"},
+			},
+		},
+	}
+	router := NewRouter(Deps{
+		Policies:  store,
+		Decisions: store,
+		Writer:    store,
+		Tenants:   store,
+		Snapshots: store,
+		Snapshotter: func(context.Context) (capacity.Snapshot, error) {
+			return snap, nil
+		},
+	})
+	return &ginEngine{t: t, h: router}
+}
+
+// TestSimulateGangPlacement 验证 gang 模拟：6 副本各 1 卡，两节点共 8 卡，
+// 应成功并输出节点分布（CPU 是瓶颈，每节点 8000/500=16 份 → 6 份全在 gpu-a）。
+func TestSimulateGangPlacement(t *testing.T) {
+	eng := gangFixture(t)
+
+	rec, payload := eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "train", "namespace": "ai", "replicas": 6,
+		             "requests": {"cpu_milli": 500, "mem_bytes": 1073741824, "gpu": 1}},
+		"policy_id": "`+testPolicyID+`",
+		"gang": {"min_available": 4}
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("期望 200，实际 %d: %s", rec.Code, rec.Body.String())
+	}
+	data := payload["data"].(map[string]any)
+	if data["status"] != string(schedcore.StatusOK) {
+		t.Fatalf("状态应为 OK，实际 %v", data["status"])
+	}
+	assignments, ok := data["assignments"].([]any)
+	if !ok || len(assignments) == 0 {
+		t.Fatalf("gang 决策应带 assignments，实际 %v", data["assignments"])
+	}
+	var total int
+	for _, a := range assignments {
+		total += int(a.(map[string]any)["replicas"].(float64))
+	}
+	if total != 6 {
+		t.Fatalf("assignments 总副本 = %d, 想要 6（%v）", total, assignments)
+	}
+	// 落库后 evidence 里也能看到 assignments 与 gang 参数。
+	if ev, ok := data["evidence"].(map[string]any); ok {
+		if ev["gang_min_available"].(float64) != 4 {
+			t.Fatalf("evidence.gang_min_available = %v, 想要 4", ev["gang_min_available"])
+		}
+		if _, ok := ev["assignments"]; !ok {
+			t.Fatal("evidence 应记录 assignments")
+		}
+	} else {
+		t.Fatalf("evidence 缺失: %v", data["evidence"])
+	}
+}
+
+// TestSimulateGangInfeasible 验证可行总量不足 min_available 时整体失败并给出证据。
+func TestSimulateGangInfeasible(t *testing.T) {
+	eng := gangFixture(t)
+
+	// 每副本 4 卡 → 每节点 1 份，总量 2 < min_available 3。
+	rec, payload := eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "train", "namespace": "ai", "replicas": 3,
+		             "requests": {"cpu_milli": 500, "mem_bytes": 1073741824, "gpu": 4}},
+		"policy_id": "`+testPolicyID+`",
+		"gang": {"min_available": 3}
+	}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gang 不可行属于可解释拒绝，应 200，实际 %d", rec.Code)
+	}
+	data := payload["data"].(map[string]any)
+	if data["status"] != string(schedcore.StatusNoCandidate) {
+		t.Fatalf("状态应为 NO_CANDIDATE，实际 %v", data["status"])
+	}
+	if data["assignments"] != nil {
+		t.Fatalf("失败时不应有 assignments，实际 %v", data["assignments"])
+	}
+	ev := data["evidence"].(map[string]any)
+	if ev["total_feasible"].(float64) != 2 {
+		t.Fatalf("total_feasible = %v, 想要 2", ev["total_feasible"])
+	}
+	if ev["min_available"].(float64) != 3 {
+		t.Fatalf("min_available = %v, 想要 3", ev["min_available"])
+	}
+}
+
+// TestSimulateGangInvalidArgs 验证 min_available 超过副本数返回 400。
+func TestSimulateGangInvalidArgs(t *testing.T) {
+	eng := gangFixture(t)
+	rec, payload := eng.post("/api/v1/placement/simulate", `{
+		"workload": {"name": "train", "namespace": "ai", "replicas": 2,
+		             "requests": {"cpu_milli": 500, "mem_bytes": 1073741824}},
+		"policy_id": "`+testPolicyID+`",
+		"gang": {"min_available": 3}
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("期望 400，实际 %d", rec.Code)
+	}
+	if payload["code"].(float64) != CodeInvalidArgument {
+		t.Fatalf("期望 40001，实际 %v", payload["code"])
+	}
+}

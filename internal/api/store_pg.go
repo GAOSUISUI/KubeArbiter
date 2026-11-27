@@ -111,7 +111,7 @@ func (s *PGStore) SaveSnapshot(ctx context.Context, snap capacity.Snapshot, hash
 	return nil
 }
 
-// GetTenant 读取租户权重与配额。配额的 cpu / memory 两行分别映射到 Resources，
+// GetTenant 读取租户权重与配额。配额的 cpu / memory / gpu 三行分别映射到 Resources，
 // FairShare 取 cpu 行（算法规范中主导份额按 CPU 归一化）；缺少配额行时按"不限"处理。
 func (s *PGStore) GetTenant(ctx context.Context, id string) (schedcore.TenantState, bool, error) {
 	if _, err := uuid.Parse(id); err != nil {
@@ -122,16 +122,18 @@ func (s *PGStore) GetTenant(ctx context.Context, id string) (schedcore.TenantSta
 		weight  float64
 		cpuHard int64
 		memHard int64
+		gpuHard int64
 		fair    float64
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT t.id::text, t.weight::float8,
-		       coalesce(qc.hard, 0), coalesce(qm.hard, 0), coalesce(qc.fair_share, 0)::float8
+		       coalesce(qc.hard, 0), coalesce(qm.hard, 0), coalesce(qg.hard, 0), coalesce(qc.fair_share, 0)::float8
 		FROM tenants t
 		LEFT JOIN quotas qc ON qc.tenant_id = t.id AND qc.resource = 'cpu'
 		LEFT JOIN quotas qm ON qm.tenant_id = t.id AND qm.resource = 'memory'
+		LEFT JOIN quotas qg ON qg.tenant_id = t.id AND qg.resource = 'gpu'
 		WHERE t.id = $1`, id).
-		Scan(&t.ID, &weight, &cpuHard, &memHard, &fair)
+		Scan(&t.ID, &weight, &cpuHard, &memHard, &gpuHard, &fair)
 	if err == pgx.ErrNoRows {
 		return schedcore.TenantState{}, false, nil
 	}
@@ -140,8 +142,8 @@ func (s *PGStore) GetTenant(ctx context.Context, id string) (schedcore.TenantSta
 	}
 	t.Weight = weight
 	t.FairShare = fair
-	if cpuHard > 0 || memHard > 0 {
-		t.Quota = schedcore.Resources{CPUMilli: cpuHard, MemBytes: memHard}
+	if cpuHard > 0 || memHard > 0 || gpuHard > 0 {
+		t.Quota = schedcore.Resources{CPUMilli: cpuHard, MemBytes: memHard, GPU: gpuHard}
 	}
 	return t, true, nil
 }

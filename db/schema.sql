@@ -26,8 +26,8 @@ COMMENT ON TABLE tenants IS '租户；weight 用于加权 DRF';
 CREATE TABLE quotas (
     id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   uuid        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    resource    varchar(16) NOT NULL CHECK (resource IN ('cpu','memory')),
-    hard        bigint      NOT NULL CHECK (hard >= 0),           -- 硬上限（millicore / byte）
+    resource    varchar(16) NOT NULL CHECK (resource IN ('cpu','memory','gpu')),
+    hard        bigint      NOT NULL CHECK (hard >= 0),           -- 硬上限（millicore / byte / GPU 整卡数）
     fair_share  numeric(8,6) NOT NULL CHECK (fair_share >= 0 AND fair_share <= 1), -- 占集群比例
     min_share   bigint      NOT NULL DEFAULT 0 CHECK (min_share >= 0),  -- DRF 保底
     max_share   bigint      CHECK (max_share IS NULL OR max_share >= min_share),

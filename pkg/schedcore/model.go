@@ -9,32 +9,34 @@ import (
 	"fmt"
 )
 
-// Resources 表示资源量。CPU 单位为 millicore，内存单位为 byte。
+// Resources 表示资源量。CPU 单位为 millicore，内存单位为 byte，
+// GPU 为整卡数（对应 Kubernetes extended resource `nvidia.com/gpu`）。
 // 内部一律用整数运算，不做浮点累加。
 type Resources struct {
 	CPUMilli int64 `json:"cpu_milli"`
 	MemBytes int64 `json:"mem_bytes"`
+	GPU      int64 `json:"gpu"`
 }
 
 func (r Resources) Add(o Resources) Resources {
-	return Resources{CPUMilli: r.CPUMilli + o.CPUMilli, MemBytes: r.MemBytes + o.MemBytes}
+	return Resources{CPUMilli: r.CPUMilli + o.CPUMilli, MemBytes: r.MemBytes + o.MemBytes, GPU: r.GPU + o.GPU}
 }
 
 func (r Resources) Sub(o Resources) Resources {
-	return Resources{CPUMilli: r.CPUMilli - o.CPUMilli, MemBytes: r.MemBytes - o.MemBytes}
+	return Resources{CPUMilli: r.CPUMilli - o.CPUMilli, MemBytes: r.MemBytes - o.MemBytes, GPU: r.GPU - o.GPU}
 }
 
 func (r Resources) Mul(n int) Resources {
-	return Resources{CPUMilli: r.CPUMilli * int64(n), MemBytes: r.MemBytes * int64(n)}
+	return Resources{CPUMilli: r.CPUMilli * int64(n), MemBytes: r.MemBytes * int64(n), GPU: r.GPU * int64(n)}
 }
 
 func (r Resources) IsZero() bool {
-	return r.CPUMilli == 0 && r.MemBytes == 0
+	return r.CPUMilli == 0 && r.MemBytes == 0 && r.GPU == 0
 }
 
 // FitsIn 判断 r 是否不超过 o（逐维）。
 func (r Resources) FitsIn(o Resources) bool {
-	return r.CPUMilli <= o.CPUMilli && r.MemBytes <= o.MemBytes
+	return r.CPUMilli <= o.CPUMilli && r.MemBytes <= o.MemBytes && r.GPU <= o.GPU
 }
 
 // ---------- 集群视图 ----------
@@ -242,6 +244,7 @@ const (
 	ReasonNodeUnschedulable    ReasonCode = "NODE_UNSCHEDULABLE"
 	ReasonInsufficientCPU      ReasonCode = "INSUFFICIENT_CPU"
 	ReasonInsufficientMemory   ReasonCode = "INSUFFICIENT_MEMORY"
+	ReasonInsufficientGPU      ReasonCode = "INSUFFICIENT_GPU"
 	ReasonTaintNotTolerated    ReasonCode = "TAINT_NOT_TOLERATED"
 	ReasonNodeSelectorMismatch ReasonCode = "NODE_SELECTOR_MISMATCH"
 	ReasonAffinityMismatch     ReasonCode = "AFFINITY_MISMATCH"
@@ -285,4 +288,15 @@ type Decision struct {
 	Filtered   []FilteredNode `json:"filtered"`
 	Degraded   bool           `json:"degraded"`
 	Warnings   []WarningCode  `json:"warnings"`
+	// Assignments 是 gang 放置的节点分布（节点 → 副本数）；单 Pod 决策只含一项。
+	// 为空表示单副本决策未生成该字段（保持与既有 JSON 兼容）。
+	Assignments []NodeAssignment `json:"assignments,omitempty"`
+	// Evidence 记录 gang 不可行等场景的聚合证据（total_feasible、min_available）。
+	Evidence map[string]any `json:"evidence,omitempty"`
+}
+
+// NodeAssignment 是 gang 放置中单个节点分到的副本数。
+type NodeAssignment struct {
+	Node     string `json:"node"`
+	Replicas int    `json:"replicas"`
 }

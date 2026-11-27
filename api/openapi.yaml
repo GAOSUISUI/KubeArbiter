@@ -1466,6 +1466,7 @@ components:
         - NODE_UNSCHEDULABLE
         - INSUFFICIENT_CPU
         - INSUFFICIENT_MEMORY
+        - INSUFFICIENT_GPU
         - TAINT_NOT_TOLERATED
         - NODE_SELECTOR_MISMATCH
         - AFFINITY_MISMATCH
@@ -1520,10 +1521,10 @@ components:
       required: [tenant_id, resource, hard, fair_share, min_share]
       properties:
         tenant_id: { type: string, format: uuid }
-        resource: { type: string, enum: [cpu, memory] }
+        resource: { type: string, enum: [cpu, memory, gpu] }
         hard:
           type: integer
-          description: cpu 为 millicore，memory 为 byte
+          description: cpu 为 millicore，memory 为 byte，gpu 为整卡数
         fair_share:
           type: number
           minimum: 0
@@ -1568,10 +1569,14 @@ components:
 
     ResourcePair:
       type: object
-      required: [cpu_milli, mem_bytes]
+      required: [cpu_milli, mem_bytes, gpu]
       properties:
         cpu_milli: { type: integer, format: int64 }
         mem_bytes: { type: integer, format: int64 }
+        gpu:
+          type: integer
+          format: int64
+          description: GPU 整卡数（extended resource nvidia.com/gpu）；无卡集群恒为 0
 
     TenantCapacity:
       type: object
@@ -1723,6 +1728,17 @@ components:
         policy_id:
           type: string
           format: uuid
+        gang:
+          $ref: '#/components/schemas/GangSpec'
+
+    GangSpec:
+      type: object
+      description: 成组（gang）放置参数；传入即要求至少 min_available 个副本同时可调度
+      properties:
+        min_available:
+          type: integer
+          minimum: 1
+          description: 最少同时可调度副本数；缺省等于 replicas（全有全无）
 
     NodeScore:
       type: object
@@ -1772,6 +1788,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FilteredNode'
+        assignments:
+          type: array
+          description: gang 放置的节点分布；单副本决策为空
+          items:
+            $ref: '#/components/schemas/NodeAssignment'
         degraded: { type: boolean }
         warnings:
           type: array
@@ -1792,6 +1813,13 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/PlacementDecision'
+
+    NodeAssignment:
+      type: object
+      required: [node, replicas]
+      properties:
+        node: { type: string }
+        replicas: { type: integer, minimum: 1 }
 
     PlacementApplyRequest:
       type: object

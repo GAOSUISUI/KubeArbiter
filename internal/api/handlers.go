@@ -445,13 +445,20 @@ func decodeCursor(raw string) (string, bool) {
 	return string(b), true
 }
 
+// GangSpec 是 gang 放置参数；MinAvailable <= 0 视为 replicas（全有全无）。
+type GangSpec struct {
+	MinAvailable int `json:"min_available"`
+}
+
 // simulateRequest 对应 openapi.yaml 的 PlacementSimulateRequest。
 // Weights 可选：传了就覆盖策略预设（前端权重滑杆直接透传），不传则使用 policy_id 对应策略的权重。
+// Gang 可选：传入即走成组（gang）放置，要求至少 MinAvailable 个副本同时可调度。
 type simulateRequest struct {
 	Workload WorkloadSpec       `json:"workload"`
 	TenantID *string            `json:"tenant_id"`
 	PolicyID string             `json:"policy_id"`
 	Weights  *schedcore.Weights `json:"weights,omitempty"`
+	Gang     *GangSpec          `json:"gang,omitempty"`
 }
 
 // simulatePlacement 用当前集群快照跑一次放置决策，并把结果落库。
@@ -536,10 +543,45 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 
 		fairnessMode := normalizeFairnessMode(policy.FairnessMode)
 		clusterCtx := placement.BuildContext(snap, tenants, fairnessMode)
-		out, err := schedcore.Place(clusterCtx, toSchedWorkload(req), weights)
+		wl := toSchedWorkload(req)
+		var out schedcore.Decision
+		if req.Gang != nil {
+			minAvail := req.Gang.MinAvailable
+			if minAvail <= 0 {
+				minAvail = req.Workload.Replicas
+			}
+			out, err = schedcore.PlaceGang(clusterCtx, wl, weights, minAvail)
+		} else {
+			out, err = schedcore.Place(clusterCtx, wl, weights)
+		}
 		if err != nil {
 			writeError(c, errBusinessRejected("PLACEMENT_REJECTED", ErrorDetail{Field: "workload", Reason: err.Error()}))
 			return
+		}
+
+		evidence := map[string]any{
+			"schema_version":      2,
+			"weights":             weights,
+			"fairness_mode":       fairnessMode,
+			"policy_id":           policy.ID,
+			"metrics_known":       clusterCtx.MetricsKnown,
+			"metrics_age_seconds": clusterCtx.MetricsAgeSeconds,
+			"node_count":          len(snap.Nodes),
+			"elapsed_ms":          time.Since(start).Milliseconds(),
+		}
+		if req.Gang != nil {
+			gangMin := req.Gang.MinAvailable
+			if gangMin <= 0 {
+				gangMin = req.Workload.Replicas
+			}
+			evidence["gang_min_available"] = gangMin
+		}
+		// 合并决策核给出的聚合证据（如 gang 不可行时的 total_feasible）。
+		for k, v := range out.Evidence {
+			evidence[k] = v
+		}
+		if len(out.Assignments) > 0 {
+			evidence["assignments"] = out.Assignments
 		}
 
 		decision := PlacementDecision{
@@ -552,17 +594,9 @@ func simulatePlacement(d Deps) gin.HandlerFunc {
 			Filtered:     out.Filtered,
 			Degraded:     degraded(out.Warnings),
 			Warnings:     out.Warnings,
-			Evidence: map[string]any{
-				"schema_version":      1,
-				"weights":             weights,
-				"fairness_mode":       fairnessMode,
-				"policy_id":           policy.ID,
-				"metrics_known":       clusterCtx.MetricsKnown,
-				"metrics_age_seconds": clusterCtx.MetricsAgeSeconds,
-				"node_count":          len(snap.Nodes),
-				"elapsed_ms":          time.Since(start).Milliseconds(),
-			},
-			CreatedAt: time.Now().UTC(),
+			Assignments:  out.Assignments,
+			Evidence:     evidence,
+			CreatedAt:    time.Now().UTC(),
 		}
 		if out.ChosenNode != "" {
 			chosen := out.ChosenNode
@@ -592,8 +626,16 @@ func validateSimulate(req simulateRequest) []ErrorDetail {
 	if req.Workload.Replicas < 1 {
 		details = append(details, ErrorDetail{Field: "workload.replicas", Reason: "至少为 1"})
 	}
-	if req.Workload.Requests.CPUMilli < 0 || req.Workload.Requests.MemBytes < 0 {
+	if req.Workload.Requests.CPUMilli < 0 || req.Workload.Requests.MemBytes < 0 || req.Workload.Requests.GPU < 0 {
 		details = append(details, ErrorDetail{Field: "workload.requests", Reason: "不能为负数"})
+	}
+	if req.Gang != nil {
+		if req.Gang.MinAvailable > req.Workload.Replicas {
+			details = append(details, ErrorDetail{Field: "gang.min_available", Reason: "不能超过 workload.replicas"})
+		}
+		if req.Gang.MinAvailable < 0 {
+			details = append(details, ErrorDetail{Field: "gang.min_available", Reason: "不能为负数"})
+		}
 	}
 	if _, err := uuid.Parse(req.PolicyID); err != nil {
 		details = append(details, ErrorDetail{Field: "policy_id", Reason: "必须是 UUID"})

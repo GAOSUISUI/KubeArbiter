@@ -102,6 +102,10 @@ Get-Content db\migrations\0003_aiops_incident_types.sql -Raw |
 Get-Content db\migrations\0004_forecast_type.sql -Raw |
   & $KUBECTL -n kubearbiter exec -i postgres-0 -- psql -U kubearbiter -d kubearbiter
 
+# 0c) 0.9.6 起：GPU 配额维度迁移（幂等；为既有租户补 hard=0 的 gpu 行）
+Get-Content db\migrations\0005_gpu_quota.sql -Raw |
+  & $KUBECTL -n kubearbiter exec -i postgres-0 -- psql -U kubearbiter -d kubearbiter
+
 # 1) 改镜像版本（或先改 yaml 再 apply）
 & $KUBECTL -n kubearbiter set image deploy/arbiter-api arbiter-api=kubearbiter/arbiter-api:0.9.4
 & $KUBECTL -n kubearbiter rollout status deploy/arbiter-api --timeout=180s

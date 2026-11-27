@@ -3,6 +3,8 @@
 export interface Resources {
   cpu_milli: number
   mem_bytes: number
+  // GPU 整卡数（nvidia.com/gpu）；无卡集群恒为 0。
+  gpu: number
 }
 
 export type WeightKey = 's_cpu' | 's_mem' | 's_balance' | 's_pack' | 's_load' | 's_fair' | 's_frag'
@@ -49,8 +51,15 @@ export interface Decision {
   filtered: FilteredNode[]
   degraded: boolean
   warnings?: string[]
+  assignments?: NodeAssignment[]
   evidence?: Record<string, any>
   created_at: string
+}
+
+// gang 放置的节点分布。
+export interface NodeAssignment {
+  node: string
+  replicas: number
 }
 
 export interface TenantItem {
@@ -97,6 +106,8 @@ export interface SimulateInput {
   tenant_id?: string
   policy_id: string
   weights?: Weights
+  // 传入即走 gang 放置；min_available 缺省 = replicas（全有全无）。
+  gang?: { min_available: number }
 }
 
 export type TaskStatus =

@@ -60,19 +60,20 @@ type TopologySpread struct {
 
 // PlacementDecision 对应 openapi.yaml 的 PlacementDecision。
 type PlacementDecision struct {
-	ID           string                   `json:"id"`
-	Status       schedcore.Status         `json:"status"`
-	Workload     *WorkloadSpec            `json:"workload,omitempty"`
-	TenantID     *string                  `json:"tenant_id"`
-	PolicyID     string                   `json:"policy_id"`
-	ChosenNode   *string                  `json:"chosen_node"`
-	SnapshotHash string                   `json:"snapshot_hash"`
-	Scores       []schedcore.NodeScore    `json:"scores"`
-	Filtered     []schedcore.FilteredNode `json:"filtered"`
-	Degraded     bool                     `json:"degraded"`
-	Warnings     []schedcore.WarningCode  `json:"warnings,omitempty"`
-	Evidence     map[string]any           `json:"evidence,omitempty"`
-	CreatedAt    time.Time                `json:"created_at"`
+	ID           string                     `json:"id"`
+	Status       schedcore.Status           `json:"status"`
+	Workload     *WorkloadSpec              `json:"workload,omitempty"`
+	TenantID     *string                    `json:"tenant_id"`
+	PolicyID     string                     `json:"policy_id"`
+	ChosenNode   *string                    `json:"chosen_node"`
+	SnapshotHash string                     `json:"snapshot_hash"`
+	Scores       []schedcore.NodeScore      `json:"scores"`
+	Filtered     []schedcore.FilteredNode   `json:"filtered"`
+	Degraded     bool                       `json:"degraded"`
+	Warnings     []schedcore.WarningCode    `json:"warnings,omitempty"`
+	Assignments  []schedcore.NodeAssignment `json:"assignments,omitempty"`
+	Evidence     map[string]any             `json:"evidence,omitempty"`
+	CreatedAt    time.Time                  `json:"created_at"`
 }
 
 type decisionPage struct {

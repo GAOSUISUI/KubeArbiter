@@ -246,6 +246,9 @@ func nodeReady(node *corev1.Node) bool {
 	return false
 }
 
+// GPUResourceName 是 NVIDIA 设备插件上报的 extended resource；无卡节点该值为 0。
+const GPUResourceName = corev1.ResourceName("nvidia.com/gpu")
+
 func resources(list corev1.ResourceList) schedcore.Resources {
 	var r schedcore.Resources
 	if q, ok := list[corev1.ResourceCPU]; ok {
@@ -253,6 +256,9 @@ func resources(list corev1.ResourceList) schedcore.Resources {
 	}
 	if q, ok := list[corev1.ResourceMemory]; ok {
 		r.MemBytes = q.Value()
+	}
+	if q, ok := list[GPUResourceName]; ok {
+		r.GPU = q.Value()
 	}
 	return r
 }
@@ -273,10 +279,14 @@ func podRequests(pod *corev1.Pod) schedcore.Resources {
 		if r.MemBytes > initMax.MemBytes {
 			initMax.MemBytes = r.MemBytes
 		}
+		if r.GPU > initMax.GPU {
+			initMax.GPU = r.GPU
+		}
 	}
 	return schedcore.Resources{
 		CPUMilli: maxInt64(app.CPUMilli, initMax.CPUMilli),
 		MemBytes: maxInt64(app.MemBytes, initMax.MemBytes),
+		GPU:      maxInt64(app.GPU, initMax.GPU),
 	}
 }
 

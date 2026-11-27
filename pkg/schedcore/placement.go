@@ -42,6 +42,7 @@ func cv2(a, b float64) float64 {
 }
 
 // dominantShare 返回资源向量在容量上的主导份额 max_r(x_r / C_r)。
+// GPU 容量为 0 的集群该维不参与（避免除零），即 GPU 公平维只在有卡的集群激活。
 func dominantShare(x, capacity Resources) float64 {
 	var s float64
 	if capacity.CPUMilli > 0 {
@@ -50,37 +51,38 @@ func dominantShare(x, capacity Resources) float64 {
 	if capacity.MemBytes > 0 {
 		s = math.Max(s, float64(x.MemBytes)/float64(capacity.MemBytes))
 	}
+	if capacity.GPU > 0 {
+		s = math.Max(s, float64(x.GPU)/float64(capacity.GPU))
+	}
 	return s
 }
 
-// Place 执行完整放置决策：硬过滤 → 七维评分 → 确定性排序。
-// 权重非法时返回 ErrInvalidWeights；其余情况通过 Decision.Status 表达结果。
-func Place(ctx ClusterContext, wl Workload, w Weights) (Decision, error) {
+// preparedPlacement 是 Place 与 PlaceGang 共享的中间结果：过滤、评分与降级信息。
+type preparedPlacement struct {
+	weights  Weights
+	scores   []NodeScore // 按总分降序、同分按节点名升序，Rank 已就位
+	filtered []FilteredNode
+	degraded bool
+	warnings []WarningCode
+}
+
+// preparePlacement 做权重校验、指标降级归一化、硬过滤与评分排序。
+func preparePlacement(ctx ClusterContext, wl Workload, w Weights) (preparedPlacement, error) {
+	out := preparedPlacement{
+		scores:   []NodeScore{},
+		filtered: []FilteredNode{},
+	}
 	if err := w.Validate(); err != nil {
-		return Decision{}, err
-	}
-
-	decision := Decision{
-		Scores:   []NodeScore{},
-		Filtered: []FilteredNode{},
-	}
-
-	if len(ctx.Nodes) == 0 {
-		decision.Status = StatusNoCandidate
-		decision.Filtered = append(decision.Filtered, FilteredNode{
-			Node:   "",
-			Reason: ReasonNoNodeInSnapshot,
-		})
-		return decision, nil
+		return out, err
 	}
 
 	// 指标过期或缺失：s_load 归零后按比例重新归一化，禁止静默使用过期数据。
 	if !ctx.MetricsKnown || ctx.MetricsAgeSeconds > loadWeightDropAgeSeconds {
-		decision.Degraded = true
+		out.degraded = true
 		if !ctx.MetricsKnown {
-			decision.Warnings = append(decision.Warnings, WarnMetricsMissing)
+			out.warnings = append(out.warnings, WarnMetricsMissing)
 		} else {
-			decision.Warnings = append(decision.Warnings, WarnMetricsStale)
+			out.warnings = append(out.warnings, WarnMetricsStale)
 		}
 		w.Load = 0
 		if s := w.Sum(); s > epsilon {
@@ -96,49 +98,68 @@ func Place(ctx ClusterContext, wl Workload, w Weights) (Decision, error) {
 	// 基线模式依赖 fair_share；DRF 模式用权重份额做目标，不需要该字段。
 	if wl.TenantID != "" && ctx.FairMode.orDefault() == FairModeWeightedShare {
 		if ts, ok := ctx.Tenants[wl.TenantID]; ok && ts.FairShare <= 0 {
-			decision.Warnings = append(decision.Warnings, WarnFairShareMissing)
+			out.warnings = append(out.warnings, WarnFairShareMissing)
 		}
 	}
 
-	totalWeight := w.Sum()
-	candidates := make([]Node, 0, len(ctx.Nodes))
+	out.weights = w
 	for _, n := range ctx.Nodes {
 		ok, reason, evidence := filterNode(ctx, wl, n)
 		if !ok {
-			decision.Filtered = append(decision.Filtered, FilteredNode{
+			out.filtered = append(out.filtered, FilteredNode{
 				Node:     n.Name,
 				Reason:   reason,
 				Evidence: evidence,
 			})
 			continue
 		}
-		candidates = append(candidates, n)
+		score := scoreNode(ctx, wl, n, w, w.Sum())
+		out.scores = append(out.scores, score)
 	}
 
-	if len(candidates) == 0 {
+	// 得分相同按节点名字节序升序，保证同一快照多次运行结果一致。
+	sort.SliceStable(out.scores, func(i, j int) bool {
+		diff := out.scores[i].Score - out.scores[j].Score
+		if math.Abs(diff) > epsilon {
+			return diff > 0
+		}
+		return out.scores[i].Node < out.scores[j].Node
+	})
+	for i := range out.scores {
+		out.scores[i].Rank = i + 1
+	}
+	return out, nil
+}
+
+// Place 执行完整放置决策：硬过滤 → 七维评分 → 确定性排序。
+// 权重非法时返回 ErrInvalidWeights；其余情况通过 Decision.Status 表达结果。
+func Place(ctx ClusterContext, wl Workload, w Weights) (Decision, error) {
+	p, err := preparePlacement(ctx, wl, w)
+	if err != nil {
+		return Decision{}, err
+	}
+
+	decision := Decision{
+		Scores:   p.scores,
+		Filtered: p.filtered,
+		Degraded: p.degraded,
+		Warnings: p.warnings,
+	}
+	if len(ctx.Nodes) == 0 {
+		decision.Status = StatusNoCandidate
+		decision.Filtered = append(decision.Filtered, FilteredNode{
+			Node:   "",
+			Reason: ReasonNoNodeInSnapshot,
+		})
+		return decision, nil
+	}
+	if len(p.scores) == 0 {
 		decision.Status = StatusNoCandidate
 		return decision, nil
 	}
 
-	for _, n := range candidates {
-		score := scoreNode(ctx, wl, n, w, totalWeight)
-		decision.Scores = append(decision.Scores, score)
-	}
-
-	// 得分相同按节点名字节序升序，保证同一快照多次运行结果一致。
-	sort.SliceStable(decision.Scores, func(i, j int) bool {
-		diff := decision.Scores[i].Score - decision.Scores[j].Score
-		if math.Abs(diff) > epsilon {
-			return diff > 0
-		}
-		return decision.Scores[i].Node < decision.Scores[j].Node
-	})
-	for i := range decision.Scores {
-		decision.Scores[i].Rank = i + 1
-	}
-
 	decision.Status = StatusOK
-	decision.ChosenNode = decision.Scores[0].Node
+	decision.ChosenNode = p.scores[0].Node
 	return decision, nil
 }
 
@@ -153,11 +174,17 @@ func filterNode(ctx ClusterContext, wl Workload, n Node) (bool, ReasonCode, map[
 
 	d := wl.Requests
 	if remaining := n.Allocatable.Sub(n.Requested); !d.FitsIn(remaining) {
-		// 两个维度都可能不足，先报 CPU 再报内存，保证原因是确定的。
+		// 不足的维度可能不止一个，按 CPU → 内存 → GPU 的固定顺序报因，保证原因确定。
 		if d.CPUMilli > remaining.CPUMilli {
 			return false, ReasonInsufficientCPU, map[string]any{
 				"remaining_cpu_milli": remaining.CPUMilli,
 				"request_cpu_milli":   d.CPUMilli,
+			}
+		}
+		if d.GPU > remaining.GPU {
+			return false, ReasonInsufficientGPU, map[string]any{
+				"remaining_gpu": remaining.GPU,
+				"request_gpu":   d.GPU,
 			}
 		}
 		return false, ReasonInsufficientMemory, map[string]any{
@@ -212,8 +239,10 @@ func filterNode(ctx ClusterContext, wl Workload, n Node) (bool, ReasonCode, map[
 				return false, ReasonTenantQuotaExceeded, map[string]any{
 					"quota_cpu_milli": ts.Quota.CPUMilli,
 					"quota_mem_bytes": ts.Quota.MemBytes,
+					"quota_gpu":       ts.Quota.GPU,
 					"after_cpu_milli": after.CPUMilli,
 					"after_mem_bytes": after.MemBytes,
+					"after_gpu":       after.GPU,
 				}
 			}
 		}
@@ -328,7 +357,15 @@ func scoreNode(ctx ClusterContext, wl Workload, n Node, w Weights, totalWeight f
 	}
 	sBalance := 1 - clamp01(cv2(postCPU, postMem))
 
-	sPack := 1 - clamp01(0.5*(ratio(residual.CPUMilli, a.CPUMilli)+ratio(residual.MemBytes, a.MemBytes)))
+	// 打包偏好：GPU 维在容量 > 0 时并入平均，偏好"放完后剩得少"的节点；
+	// 无卡集群与原口径完全一致。
+	packSum := ratio(residual.CPUMilli, a.CPUMilli) + ratio(residual.MemBytes, a.MemBytes)
+	packDims := 2.0
+	if a.GPU > 0 {
+		packSum += ratio(residual.GPU, a.GPU)
+		packDims = 3
+	}
+	sPack := 1 - clamp01(packSum/packDims)
 
 	var usageCPU, usageMem float64
 	if n.UsageKnown {
