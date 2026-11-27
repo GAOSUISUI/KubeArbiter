@@ -75,13 +75,16 @@ const NAV = [
   { path: '/fairness', label: '公平性与历史', kw: 'fairness 公平 历史 decision' },
   { path: '/policies', label: '策略管理', kw: 'policy 策略 权重' },
   { path: '/nodes', label: '节点与容量', kw: 'node 节点 容量 集群' },
-  { path: '/tasks', label: '任务与审计', kw: 'task 任务 审计 audit' }
+  { path: '/tasks', label: '任务与审计', kw: 'task 任务 审计 audit' },
+  { path: '/monitor', label: '监控大盘', kw: 'monitor 监控 指标 健康分 大盘' },
+  { path: '/incidents', label: '异常事件', kw: 'incident 事件 故障 诊断 diagnosis' },
+  { path: '/slo', label: 'SLO 治理', kw: 'slo 可用性 预算 燃尽 error budget' }
 ]
 
 const SHORTCUT_LIST = [
   { label: '打开命令面板（搜索页面 / 任务 / 身份）', keys: ['Ctrl/⌘', 'K'] },
   { label: '打开本快捷键帮助', keys: ['?'] },
-  { label: '跳转到对应页面（先按 g）', keys: ['g', 's/f/p/n/t'] },
+  { label: '跳转到对应页面（先按 g）', keys: ['g', 's/f/p/n/t/m/e/l'] },
   { label: '模拟页立即运行一次', keys: ['Ctrl/⌘', 'Enter'] },
   { label: '关闭弹窗或命令面板', keys: ['Esc'] }
 ]

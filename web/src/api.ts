@@ -180,6 +180,204 @@ export interface AuditQuery {
   cursor?: string
 }
 
+// ---------- AIOps ----------
+
+export interface HealthComponent {
+  code: string
+  message: string
+  delta: number
+}
+
+export interface HealthScore {
+  scope: 'CLUSTER' | 'NODE' | 'TENANT' | string
+  name: string
+  score: number | null
+  components: HealthComponent[]
+}
+
+export interface Incident {
+  id: string
+  target: string
+  namespace: string
+  type: string
+  severity: 'INFO' | 'WARN' | 'CRITICAL' | string
+  status: string
+  first_seen: string
+  resolved_at: string | null
+}
+
+export interface IncidentFact {
+  stage: string
+  at: string
+  object?: string
+  summary: string
+  values?: Record<string, any>
+}
+
+export interface IncidentInference {
+  root_cause: string
+  confidence: string
+  evidence: string[]
+  counter_evidence?: string[]
+}
+
+export interface IncidentDiagnosis {
+  id: string
+  incident_id: string
+  facts: IncidentFact[]
+  inferences: IncidentInference[]
+  created_at: string
+}
+
+export interface RecoveryAction {
+  id: string
+  action: string
+  task_id: string | null
+  approved_by: string | null
+  result: string
+  created_at: string
+}
+
+export interface IncidentDetail extends Incident {
+  diagnosis: IncidentDiagnosis | null
+  recovery_actions: RecoveryAction[]
+}
+
+export interface IncidentPage {
+  items: Incident[]
+  next_cursor?: string | null
+}
+
+export interface IncidentQuery {
+  status?: string
+  type?: string
+  severity?: string
+  namespace?: string
+  target?: string
+  limit?: number
+  cursor?: string
+}
+
+export interface MonitorPoint {
+  ts: string
+  cpu_milli: number
+  mem_bytes: number
+}
+
+export interface MonitorNodeSeries {
+  name: string
+  points: MonitorPoint[]
+}
+
+export interface MonitorSeries {
+  window: string
+  step_seconds: number
+  retention_seconds: number
+  degraded: boolean
+  nodes: MonitorNodeSeries[]
+  cluster: MonitorPoint[]
+}
+
+export interface MonitorNode {
+  name: string
+  ready: boolean
+  unschedulable: boolean
+  conditions: Record<string, boolean>
+  allocatable: Resources
+  requested: Resources
+  usage: Resources
+  usage_known: boolean
+  pod_count: number
+  health: HealthScore
+}
+
+export interface MonitorTenant {
+  id: string
+  name: string
+  quota: Resources
+  requested: Resources
+  quota_ratio: number
+  share: number
+  fair_share: number
+  health: HealthScore
+}
+
+export interface MonitorOverview {
+  taken_at: string
+  degraded: boolean
+  metrics_at: string | null
+  metrics_age_seconds: number | null
+  retention_seconds: number
+  cluster: {
+    nodes_total: number
+    nodes_ready: number
+    cpu_alloc_milli: number
+    cpu_requested_milli: number
+    cpu_usage_milli: number
+    mem_alloc_bytes: number
+    mem_requested_bytes: number
+    mem_usage_bytes: number
+    pods: number
+    health: HealthScore
+  }
+  nodes: MonitorNode[]
+  tenants: MonitorTenant[]
+  incidents: { open: number; critical: number; warn: number; info: number }
+}
+
+// ---------- SLO ----------
+
+export interface SLODefinitionInput {
+  service: string
+  sli_type: string
+  target: number
+  window_seconds: number
+  latency_threshold_ms?: number | null
+}
+
+export interface SLOStatus {
+  service: string
+  sli_type: string
+  target: number
+  current: number
+  budget_remaining: number
+  total_requests: number
+  publishing_allowed: boolean
+  degraded: boolean
+}
+
+export interface BurnRateWindow {
+  long_window: string
+  short_window: string
+  threshold: number
+  burn_rate: number
+  firing: boolean
+  completeness: number
+}
+
+export interface SLODetail {
+  service: string
+  sli_type: string
+  target: number
+  latency_threshold_ms?: number | null
+  windows: BurnRateWindow[]
+  degraded: boolean
+}
+
+export interface SLOBudget {
+  service: string
+  window: string
+  budget_total: number
+  budget_consumed: number
+  budget_remaining: number
+  total_requests: number
+  publishing_allowed: boolean
+  degraded: boolean
+  completeness: number
+  action: string
+  reasons?: string[]
+}
+
 const BASE = () => localStorage.getItem('ka_api_base') || ''
 
 /** 当前调用方身份（X-Actor）；为空时后端按 anonymous 处理。 */
@@ -301,7 +499,57 @@ export const api = {
           limit: q.limit,
           cursor: q.cursor
         })
-    )
+    ),
+
+  // ---------- AIOps ----------
+  incidents: (q: IncidentQuery = {}) =>
+    call<IncidentPage>(
+      '/api/v1/incidents' +
+        query({
+          status: q.status,
+          type: q.type,
+          severity: q.severity,
+          namespace: q.namespace,
+          target: q.target,
+          limit: q.limit,
+          cursor: q.cursor
+        })
+    ),
+  incident: (id: string) => call<IncidentDetail>(`/api/v1/incidents/${encodeURIComponent(id)}`),
+  runDiagnosis: (body: { incident_id?: string; target?: string; namespace?: string }) =>
+    call<IncidentDiagnosis>('/api/v1/diagnosis/run', {
+      method: 'POST',
+      headers: requestHeaders(undefined, true),
+      body: JSON.stringify(body)
+    }),
+  monitorOverview: () => call<MonitorOverview>('/api/v1/monitor/overview'),
+  monitorSeries: (window = '1h') =>
+    call<MonitorSeries>('/api/v1/monitor/series' + query({ window })),
+
+  // ---------- SLO ----------
+  sloList: () => call<SLOStatus[]>('/api/v1/slo'),
+  sloDetail: (service: string) =>
+    call<SLODetail>(`/api/v1/slo/${encodeURIComponent(service)}`),
+  sloBudget: (service: string, window?: string) =>
+    call<SLOBudget>(
+      `/api/v1/slo/${encodeURIComponent(service)}/budget` + (window ? query({ window }) : '')
+    ),
+  createSLO: (def: SLODefinitionInput) =>
+    call<SLODefinitionInput>('/api/v1/slo', {
+      method: 'POST',
+      headers: requestHeaders(undefined, true),
+      body: JSON.stringify(def)
+    }),
+  updateSLO: (service: string, sliType: string, def: SLODefinitionInput) =>
+    call<SLODefinitionInput>(`/api/v1/slo/${encodeURIComponent(service)}/${encodeURIComponent(sliType)}`, {
+      method: 'PUT',
+      headers: requestHeaders(undefined, true),
+      body: JSON.stringify(def)
+    }),
+  deleteSLO: (service: string, sliType: string) =>
+    call<void>(`/api/v1/slo/${encodeURIComponent(service)}/${encodeURIComponent(sliType)}`, {
+      method: 'DELETE'
+    })
 }
 
 // ---------- 展示用格式化 ----------
@@ -359,6 +607,43 @@ export function statusTone(status: string) {
     default:
       return ''
   }
+}
+
+export const INCIDENT_LABELS: Record<string, string> = {
+  CRASH_LOOP: '容器反复重启',
+  IMAGE_PULL_BACKOFF: '镜像拉取失败',
+  READINESS_FAIL: '就绪检查失败',
+  OOM_KILLED: '内存溢出',
+  DOWNSTREAM_TIMEOUT: '下游超时',
+  EMPTY_ENDPOINTS: '无可用端点',
+  CONFIG_ERROR: '配置异常',
+  NODE_NOT_READY: '节点未就绪',
+  NODE_PRESSURE: '节点资源压力',
+  NODE_HIGH_USAGE: '节点高负载',
+  METRICS_STALE: '指标过期',
+  POD_PENDING_LONG: '调度等待过久',
+  POD_READINESS_FAIL: 'Pod 未就绪',
+  QUOTA_NEAR: '配额临界'
+}
+
+export function severityTone(severity: string) {
+  switch (severity) {
+    case 'CRITICAL':
+      return 'bad'
+    case 'WARN':
+      return 'warn'
+    case 'INFO':
+      return 'info'
+    default:
+      return ''
+  }
+}
+
+export function healthTone(score?: number | null) {
+  if (score == null) return ''
+  if (score >= 90) return 'ok'
+  if (score >= 70) return 'warn'
+  return 'bad'
 }
 
 export function fmtTime(iso?: string | null) {

@@ -121,7 +121,8 @@ informer / kubelet 指标
 ### 3.7 离线基准与 SLO
 
 - `arbiter-bench` 在固定随机种子下对比多种策略，输出控制台条形图、Markdown 与可选 JSON 报告，用于复现实验数据。
-- SLO 相关接口（定义、预算、多窗口燃尽率）已实现并可调用，但当前控制台没有独立 SLO 页面，主要通过 API 使用。
+- 控制台的"SLO 治理"页支持 SLO 定义增删改查、当前达成、错误预算、三档燃尽率与数据完整度；平台内置采集 `arbiter-api` 自身的可用性，其他服务需外部写入分钟桶。
+- 数据不足时页面显示"数据积累中"，不会用 0 值代替；`total_requests=0` 显示"无请求"。
 
 ---
 
@@ -131,11 +132,11 @@ informer / kubelet 指标
 
 | 位置 | 功能 |
 |---|---|
-| 左侧栏 | 五个页面导航；切换身份（`X-Actor`）；修改 API 地址 |
+| 左侧栏 | 八个页面导航；切换身份（`X-Actor`）；修改 API 地址 |
 | 顶部栏 | 当前页面标题、命令面板、API 健康状态（20s 轮询）、手动刷新 |
 | `Ctrl/⌘ + K` | 命令面板：搜索页面、任务、切换身份 |
 | `?` | 快捷键帮助 |
-| `g` 然后 `s/f/p/n/t` | 快速跳转模拟/公平性/策略/节点/任务页 |
+| `g` 然后 `s/f/p/n/t/m/e/l` | 快速跳转模拟/公平性/策略/节点/任务/监控/事件/SLO 页 |
 | `Ctrl/⌘ + Enter` | 在模拟工作台立即运行一次模拟 |
 
 身份仅用于审计与审批规则，不是认证。请求头为 `X-Actor`，默认 `anonymous`；审批人与创建人相同时会被拒绝（`admin` 除外）。
@@ -149,6 +150,9 @@ informer / kubelet 指标
 | 策略管理 | 换权重会怎样 | 新建/编辑策略、切换策略类型与公平模式、设默认、删除 |
 | 节点与容量 | 集群还剩多少、谁在压 | 节点卡片、压力气泡图、单节点 CPU/内存趋势、自动刷新 |
 | 任务与审计 | 系统做了什么、谁批的 | 筛选任务、批量审批/取消、看详情与日志、导出审计 CSV |
+| 监控大盘 | 集群现在健康吗、资源用在哪 | 节点就绪/CPU/内存/事件 KPI、集群趋势、健康分、节点与租户表；30s 自动刷新 |
+| 异常事件 | 出了什么问题、为什么 | 按状态/类型/严重度筛选；查看观测事实与诊断推断；对未解决事件重新诊断 |
+| SLO 治理 | 服务水平达没达标 | 查看/新建/编辑/删除 SLO；看当前达成、预算余量、燃尽窗口与完整度 |
 
 模拟工作台还提供：场景模板（Web 服务、批处理、缓存、Sidecar）、权重预设（均衡/装箱/负载感知/公平优先）、最近 8 条决策回看、与基线决策的逐节点分数差、以及"把当前权重另存为策略"。
 
@@ -160,6 +164,9 @@ informer / kubelet 指标
 4. 把当前权重保存为新策略，到"策略管理"确认。
 5. 回到模拟结果点"提交执行"，到"任务与审计"用另一个身份审批。
 6. 观察任务状态与日志，最后在审计列表确认创建、审批、执行记录。
+7. 打开"监控大盘"，说明节点健康分、资源趋势与开放事件；指标降级时会显示原因。
+8. 打开"异常事件"，查看观测事实与诊断推断，并演示"重新诊断"。
+9. 打开"SLO 治理"，说明 `arbiter-api` 的可用性 SLO 与"数据积累中"的含义。
 
 ---
 
@@ -225,6 +232,8 @@ $KUBECTL = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Kubernetes.kubectl_Micro
 & $KUBECTL apply -f deploy/postgres/postgres.yaml
 & $KUBECTL -n kubearbiter wait --for=condition=Ready pod/postgres-0 --timeout=120s
 Get-Content db\schema.sql -Raw | & $KUBECTL -n kubearbiter exec -i postgres-0 -- psql -U kubearbiter -d kubearbiter
+# 已有数据库升级时，再执行一次事件类型迁移
+Get-Content db\migrations\0003_aiops_incident_types.sql -Raw | & $KUBECTL -n kubearbiter exec -i postgres-0 -- psql -U kubearbiter -d kubearbiter
 
 # 2) 导入镜像（仅控制平面节点 ka-cp1）
 scp -i C:\Users\Gracie\.ssh\ka-cp1 bin\arbiter-image-0.9.4.tar arbiter@192.168.49.11:/tmp/
@@ -283,7 +292,14 @@ curl.exe http://127.0.0.1:8080/healthz
 | POST | `/api/v1/tasks/:id/approve` | 审批任务 |
 | POST | `/api/v1/tasks/:id/cancel` | 取消任务 |
 | GET | `/api/v1/audit-logs` | 审计日志 |
+| GET | `/api/v1/incidents` | 异常事件列表（可按状态/类型/严重度/范围筛选） |
+| GET | `/api/v1/incidents/:id` | 事件详情与最新诊断 |
+| POST | `/api/v1/diagnosis/run` | 对未解决事件重新诊断 |
+| GET | `/api/v1/monitor/overview` | 集群/节点/租户概览与健康分 |
+| GET | `/api/v1/monitor/series?window=1h` | 节点与集群短期指标序列 |
 | GET/POST | `/api/v1/slo` | SLO 定义列表 / 新建 |
+| PUT/DELETE | `/api/v1/slo/:service/:sliType` | 更新 / 删除 SLO 定义 |
+| GET | `/api/v1/slo/:service` | SLO 详情与燃尽窗口 |
 | GET | `/api/v1/slo/:service/budget` | 错误预算与燃尽率 |
 
 示例：
@@ -327,6 +343,8 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks/<任务 UUID>/approve \
 | `ARBITER_PG_DSN` | 空 | PostgreSQL DSN；为空时使用内存存储 |
 | `ARBITER_TLS_CERT` / `ARBITER_TLS_KEY` | 空 | 同时提供才启动 Webhook TLS 服务 |
 | `ARBITER_WEBHOOK_ADDR` | `:9443` | Webhook 监听地址 |
+| `ARBITER_DETECT_INTERVAL` | `30s` | 故障检测扫描周期 |
+| `ARBITER_SELF_SLO` | 开启 | 设为 `off` 关闭平台自身 SLO 定义与采集 |
 
 ### arbiter-worker
 
@@ -347,11 +365,13 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks/<任务 UUID>/approve \
 1. **认证尚未落地**：`X-Actor` 只是审计标识，可被伪造；`admin` 为固定名称。生产使用前必须接入真实认证与 RBAC。
 2. **单副本/固定节点**：api 与 worker 当前固定在控制平面节点，镜像只在 ka-cp1 本地，不具备高可用。
 3. **执行范围有限**：worker 只会给 Deployment/StatefulSet 注入 `nodeAffinity`；其他任务类型尚未接入执行器。
-4. **SLO 只有 API**：预算与燃尽率接口可用，控制台暂无页面。
+4. **SLO 数据来源有限**：平台只自动采集 `arbiter-api` 自身可用性；其他服务的分钟桶需要外部写入，否则显示"数据积累中"。
 5. **指标依赖 kubelet**：指标缺失会降级而不是阻塞决策；页面会显示"缺失/降级"。
 6. **前端需先构建**：仓库只保留 `internal/webui/dist/.gitkeep`，未构建前端时 `go build` 仍可编译，但控制台返回纯 API。
 7. **快照时效**：集群变化后旧决策不能执行，必须重新模拟。
 8. **Webhook 证书**：`gen-certs.sh` 生成自签证书并在集群内轮换，私钥不入库。
+9. **指标历史在进程内**：默认保留 6 小时，API 重启后清空；需要长期历史时应接 Prometheus。
+10. **事件类型迁移**：部署到已有数据库前需执行 `db/migrations/0003_aiops_incident_types.sql`，否则新类型事件写入会被 CHECK 拒绝。
 
 ---
 
@@ -367,6 +387,10 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks/<任务 UUID>/approve \
 | 执行失败 | 查看任务日志与 `error_code`；确认目标工作负载是 Deployment/StatefulSet |
 | 图表空白 | 是否新增了未在 `web/src/lib/chart.ts` 注册的 ECharts 类型 |
 | 镜像拉取失败 | 镜像是否已导入 ka-cp1，`ctr -n k8s.io images ls` 是否可见 |
+| 监控趋势为空 | informer 是否同步、kubelet 指标是否可达；`degraded` 为 true 时看 `metrics_at` |
+| 事件列表为空 | 集群当前确实无异常，或检测器未启动（查看 API 日志与 `ARBITER_DETECT_INTERVAL`） |
+| 部署后事件写入报 CHECK 失败 | 执行 `db/migrations/0003_aiops_incident_types.sql` |
+| SLO 显示"数据积累中" | 分钟桶尚未覆盖一个完整窗口；等待或检查 `/api/v1/` 是否有请求 |
 
 更完整的发布与回滚步骤见 [02-release-runbook.md](02-release-runbook.md)。
 
@@ -379,6 +403,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks/<任务 UUID>/approve \
 | [KubeArbiter项目说明书.md](../KubeArbiter项目说明书.md) | 项目定位、架构、实验与验收标准 |
 | [00-freeze.md](00-freeze.md) | 范围冻结、版本策略、安全护栏 |
 | [01-algorithm-spec.md](01-algorithm-spec.md) | 放置/公平/SLO 算法与原因码 |
+| [04-aiops.md](04-aiops.md) | 故障检测规则、健康分、内置 SLI 与限制 |
 | [02-release-runbook.md](02-release-runbook.md) | 构建、镜像、部署、回滚 |
 | [benchmark.md](benchmark.md) | 策略对比基准报告 |
 | [api/openapi.yaml](../api/openapi.yaml) | HTTP 契约唯一来源 |

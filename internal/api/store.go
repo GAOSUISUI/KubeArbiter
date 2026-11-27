@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kubearbiter/kubearbiter/internal/aiops"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/internal/slo"
 	"github.com/kubearbiter/kubearbiter/internal/taskengine"
@@ -148,6 +149,8 @@ type MemoryStore struct {
 	taskLogs   map[string][]TaskLog
 	auditLogs  []AuditLog
 	auditSeq   int64
+	incidents  []aiops.Incident
+	diagnoses  map[string][]aiops.Diagnosis
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -162,6 +165,7 @@ func NewMemoryStore() *MemoryStore {
 		tasks:      make([]Task, 0),
 		taskLogs:   make(map[string][]TaskLog),
 		auditLogs:  make([]AuditLog, 0),
+		diagnoses:  make(map[string][]aiops.Diagnosis),
 	}
 }
 

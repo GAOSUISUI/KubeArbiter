@@ -79,7 +79,10 @@ const nav = [
   { path: '/fairness', label: '公平性与历史' },
   { path: '/policies', label: '策略管理' },
   { path: '/nodes', label: '节点与容量' },
-  { path: '/tasks', label: '任务与审计' }
+  { path: '/tasks', label: '任务与审计' },
+  { path: '/monitor', label: '监控大盘' },
+  { path: '/incidents', label: '异常事件' },
+  { path: '/slo', label: 'SLO 治理' }
 ]
 
 const router = useRouter()
@@ -140,13 +143,16 @@ function onActorEvent(e: Event) {
   actorDraft.value = v
 }
 
-// g + s/f/p/n/t 快速跳转；输入框内不拦截。
+// g + s/f/p/n/t/m/e/l 快速跳转；输入框内不拦截。
 const SHORTCUTS: Record<string, string> = {
   s: '/simulator',
   f: '/fairness',
   p: '/policies',
   n: '/nodes',
-  t: '/tasks'
+  t: '/tasks',
+  m: '/monitor',
+  e: '/incidents',
+  l: '/slo'
 }
 let gAt = 0
 

@@ -119,7 +119,7 @@ func TestCapacityOverview(t *testing.T) {
 	var payload struct {
 		Data struct {
 			Nodes struct {
-				Count       int               `json:"count"`
+				Count       int                 `json:"count"`
 				Allocatable schedcore.Resources `json:"allocatable"`
 				Requested   schedcore.Resources `json:"requested"`
 			} `json:"nodes"`

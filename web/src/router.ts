@@ -10,6 +10,9 @@ export default createRouter({
     { path: '/fairness', component: () => import('./views/FairnessView.vue'), meta: { title: '公平性与历史' } },
     { path: '/policies', component: () => import('./views/PoliciesView.vue'), meta: { title: '策略管理' } },
     { path: '/nodes', component: () => import('./views/NodesView.vue'), meta: { title: '节点与容量' } },
-    { path: '/tasks', component: () => import('./views/TasksView.vue'), meta: { title: '任务与审计' } }
+    { path: '/tasks', component: () => import('./views/TasksView.vue'), meta: { title: '任务与审计' } },
+    { path: '/monitor', component: () => import('./views/MonitorView.vue'), meta: { title: '监控大盘' } },
+    { path: '/incidents', component: () => import('./views/IncidentsView.vue'), meta: { title: '异常事件' } },
+    { path: '/slo', component: () => import('./views/SloView.vue'), meta: { title: 'SLO 治理' } }
   ]
 })

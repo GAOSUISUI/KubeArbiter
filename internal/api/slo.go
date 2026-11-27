@@ -36,6 +36,7 @@ type sloStatus struct {
 	Target            float64     `json:"target"`
 	Current           float64     `json:"current"`
 	BudgetRemaining   float64     `json:"budget_remaining"`
+	TotalRequests     int64       `json:"total_requests"`
 	PublishingAllowed bool        `json:"publishing_allowed"`
 	Degraded          bool        `json:"degraded"`
 }
@@ -67,6 +68,7 @@ type budgetStatus struct {
 	BudgetTotal       float64    `json:"budget_total"`
 	BudgetConsumed    float64    `json:"budget_consumed"`
 	BudgetRemaining   float64    `json:"budget_remaining"`
+	TotalRequests     int64      `json:"total_requests"`
 	PublishingAllowed bool       `json:"publishing_allowed"`
 	Degraded          bool       `json:"degraded"`
 	Completeness      float64    `json:"completeness"`
@@ -102,6 +104,7 @@ func listSLO(d Deps) gin.HandlerFunc {
 				Target:            def.Target,
 				Current:           report.Budget.Current,
 				BudgetRemaining:   report.Budget.BudgetRemaining,
+				TotalRequests:     report.Budget.TotalRequests,
 				PublishingAllowed: decision.PublishingAllowed,
 				Degraded:          report.Budget.Degraded,
 			})
@@ -208,6 +211,7 @@ func getSLOBudget(d Deps) gin.HandlerFunc {
 			BudgetTotal:       budget.BudgetTotal,
 			BudgetConsumed:    budget.BudgetConsumed,
 			BudgetRemaining:   budget.BudgetRemaining,
+			TotalRequests:     budget.TotalRequests,
 			PublishingAllowed: decision.PublishingAllowed,
 			Degraded:          budget.Degraded,
 			Completeness:      budget.Completeness,

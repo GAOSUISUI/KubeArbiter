@@ -13,8 +13,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/kubearbiter/kubearbiter/internal/aiops"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/internal/decision/placement"
+	"github.com/kubearbiter/kubearbiter/internal/observe"
 	"github.com/kubearbiter/kubearbiter/pkg/schedcore"
 )
 
@@ -54,6 +56,16 @@ type Deps struct {
 	TenantOfNamespace func(namespace string) (string, bool)
 	// Snapshotter 返回当前集群只读快照；未接入 informer 时为 nil，模拟接口返回 503。
 	Snapshotter func(context.Context) (capacity.Snapshot, error)
+	// Observer 返回面向故障检测的诊断视图；未接入 informer 时为 nil。
+	Observer func(context.Context) (capacity.Diagnostics, error)
+	// Metrics 提供节点原始指标历史；未接入指标采集时为 nil。
+	Metrics MetricHistory
+	// Incidents 读取事件与诊断；为空时回退到内存实现。
+	Incidents aiops.Reader
+	// IncidentWriter 写入事件与诊断；为空时回退到内存实现。
+	IncidentWriter aiops.Writer
+	// Recorder 统计 API 请求的可用性 SLI；为空时不采集。
+	Recorder *observe.Recorder
 	// Checks 为健康检查集合，key 为依赖名（如 "postgres"、"k8s"）。
 	Checks map[string]func(context.Context) error
 }
@@ -110,9 +122,22 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.AuditWriter == nil {
 		d.AuditWriter = NewMemoryStore()
 	}
+	if d.Incidents == nil || d.IncidentWriter == nil {
+		store := NewMemoryStore()
+		if d.Incidents == nil {
+			d.Incidents = store
+		}
+		if d.IncidentWriter == nil {
+			d.IncidentWriter = store
+		}
+	}
 
 	r := gin.New()
-	r.Use(CORS(), TraceID(), Recover())
+	r.Use(CORS(), TraceID())
+	if d.Recorder != nil {
+		r.Use(recordRequests(d.Recorder))
+	}
+	r.Use(Recover())
 
 	r.GET("/healthz", healthz(d))
 
@@ -139,6 +164,11 @@ func NewRouter(d Deps) *gin.Engine {
 	v1.POST("/slo", createSLODefinition(d))
 	v1.PUT("/slo/:service/:sliType", updateSLODefinition(d))
 	v1.DELETE("/slo/:service/:sliType", deleteSLODefinition(d))
+	v1.GET("/incidents", listIncidents(d))
+	v1.GET("/incidents/:id", getIncident(d))
+	v1.POST("/diagnosis/run", runDiagnosis(d))
+	v1.GET("/monitor/overview", monitorOverview(d))
+	v1.GET("/monitor/series", monitorSeries(d))
 
 	// 准入 webhook 正式路径走独立端口的 TLS 服务，这里同二进制内也注册一份，便于本地调试与单测。
 	r.POST("/webhook/mutate-pods", webhookMutate(d))

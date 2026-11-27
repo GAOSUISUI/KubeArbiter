@@ -94,6 +94,10 @@ ssh -i C:\Users\Gracie\.ssh\ka-cp1 arbiter@192.168.49.11 `
 ```powershell
 $KUBECTL = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Kubernetes.kubectl_Microsoft.Winget.Source_8wekyb3d8bbwe\kubectl.exe"
 
+# 0) 已有数据库升级：AIOps 事件类型迁移（幂等；新库由 schema.sql 直接包含）
+Get-Content db\migrations\0003_aiops_incident_types.sql -Raw |
+  & $KUBECTL -n kubearbiter exec -i postgres-0 -- psql -U kubearbiter -d kubearbiter
+
 # 1) 改镜像版本（或先改 yaml 再 apply）
 & $KUBECTL -n kubearbiter set image deploy/arbiter-api arbiter-api=kubearbiter/arbiter-api:0.9.4
 & $KUBECTL -n kubearbiter rollout status deploy/arbiter-api --timeout=180s

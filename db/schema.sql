@@ -222,7 +222,9 @@ CREATE TABLE incidents (
     namespace   varchar(63)  NOT NULL,
     type        varchar(32)  NOT NULL
                 CHECK (type IN ('CRASH_LOOP','IMAGE_PULL_BACKOFF','READINESS_FAIL','OOM_KILLED',
-                                'DOWNSTREAM_TIMEOUT','EMPTY_ENDPOINTS','CONFIG_ERROR')),
+                                'DOWNSTREAM_TIMEOUT','EMPTY_ENDPOINTS','CONFIG_ERROR',
+                                'NODE_NOT_READY','NODE_PRESSURE','NODE_HIGH_USAGE','METRICS_STALE',
+                                'POD_PENDING_LONG','POD_READINESS_FAIL','QUOTA_NEAR')),
     severity    varchar(16)  NOT NULL CHECK (severity IN ('INFO','WARN','CRITICAL')),
     status      varchar(16)  NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN','RESOLVED')),
     first_seen  timestamptz  NOT NULL,

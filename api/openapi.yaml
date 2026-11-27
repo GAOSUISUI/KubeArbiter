@@ -136,6 +136,52 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/monitor/overview:
+    get:
+      tags: [monitor]
+      summary: 运维总览（集群、节点、租户与开放事件）
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MonitorOverview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /api/v1/monitor/series:
+    get:
+      tags: [monitor]
+      summary: 节点与集群的短期指标序列
+      parameters:
+        - name: window
+          in: query
+          schema: { type: string, enum: [1h, 6h, 24h], default: 1h }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MonitorSeries'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   # ---------------------------------------------------------------- tenants
   /api/v1/tenants:
     get:
@@ -891,6 +937,15 @@ paths:
           in: query
           schema:
             $ref: '#/components/schemas/IncidentType'
+        - name: severity
+          in: query
+          schema: { type: string, enum: [INFO, WARN, CRITICAL] }
+        - name: namespace
+          in: query
+          schema: { type: string }
+        - name: target
+          in: query
+          schema: { type: string }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -1334,7 +1389,7 @@ components:
 
     IncidentType:
       type: string
-      enum: [CRASH_LOOP, IMAGE_PULL_BACKOFF, READINESS_FAIL, OOM_KILLED, DOWNSTREAM_TIMEOUT, EMPTY_ENDPOINTS, CONFIG_ERROR]
+      enum: [CRASH_LOOP, IMAGE_PULL_BACKOFF, READINESS_FAIL, OOM_KILLED, DOWNSTREAM_TIMEOUT, EMPTY_ENDPOINTS, CONFIG_ERROR, NODE_NOT_READY, NODE_PRESSURE, NODE_HIGH_USAGE, METRICS_STALE, POD_PENDING_LONG, POD_READINESS_FAIL, QUOTA_NEAR]
 
     Severity:
       type: string
@@ -1818,6 +1873,7 @@ components:
         target: { type: number }
         current: { type: number }
         budget_remaining: { type: number }
+        total_requests: { type: integer, format: int64 }
         publishing_allowed: { type: boolean }
         degraded: { type: boolean }
 
@@ -1927,6 +1983,7 @@ components:
         budget_remaining:
           type: number
           description: 允许为负值，表示已透支，不得截断为 0
+        total_requests: { type: integer, format: int64 }
         publishing_allowed: { type: boolean }
         degraded: { type: boolean }
         completeness: { type: number }
@@ -1936,6 +1993,128 @@ components:
           type: array
           description: 机器可读的触发原因，如 FAST_BURN_14_4
           items: { type: string }
+
+    # ------------------------------------------------ 运维监控
+    HealthComponent:
+      type: object
+      required: [code, message, delta]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        delta: { type: number }
+
+    HealthScore:
+      type: object
+      required: [scope, name, components]
+      properties:
+        scope: { type: string, enum: [CLUSTER, NODE, TENANT] }
+        name: { type: string }
+        score:
+          type: number
+          nullable: true
+          description: null 表示数据不足，不能当作 0 分
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthComponent'
+
+    MonitorPoint:
+      type: object
+      required: [ts, cpu_milli, mem_bytes]
+      properties:
+        ts: { type: string, format: date-time }
+        cpu_milli: { type: integer, format: int64 }
+        mem_bytes: { type: integer, format: int64 }
+
+    MonitorNodeSeries:
+      type: object
+      required: [name, points]
+      properties:
+        name: { type: string }
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/MonitorPoint'
+
+    MonitorSeries:
+      type: object
+      required: [window, step_seconds, degraded, nodes, cluster]
+      properties:
+        window: { type: string }
+        step_seconds: { type: integer }
+        retention_seconds: { type: integer, format: int64 }
+        degraded: { type: boolean }
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MonitorNodeSeries'
+        cluster:
+          type: array
+          items:
+            $ref: '#/components/schemas/MonitorPoint'
+
+    MonitorOverview:
+      type: object
+      required: [taken_at, degraded, cluster, nodes, tenants, incidents]
+      properties:
+        taken_at: { type: string, format: date-time }
+        degraded: { type: boolean }
+        metrics_at: { type: string, format: date-time, nullable: true }
+        metrics_age_seconds: { type: integer, format: int64, nullable: true }
+        retention_seconds: { type: integer, format: int64 }
+        cluster:
+          type: object
+          properties:
+            nodes_total: { type: integer }
+            nodes_ready: { type: integer }
+            cpu_alloc_milli: { type: integer, format: int64 }
+            cpu_requested_milli: { type: integer, format: int64 }
+            cpu_usage_milli: { type: integer, format: int64 }
+            mem_alloc_bytes: { type: integer, format: int64 }
+            mem_requested_bytes: { type: integer, format: int64 }
+            mem_usage_bytes: { type: integer, format: int64 }
+            pods: { type: integer }
+            health:
+              $ref: '#/components/schemas/HealthScore'
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              ready: { type: boolean }
+              unschedulable: { type: boolean }
+              conditions:
+                type: object
+                additionalProperties: { type: boolean }
+              allocatable: { $ref: '#/components/schemas/ResourcePair' }
+              requested: { $ref: '#/components/schemas/ResourcePair' }
+              usage: { $ref: '#/components/schemas/ResourcePair' }
+              usage_known: { type: boolean }
+              pod_count: { type: integer }
+              health:
+                $ref: '#/components/schemas/HealthScore'
+        tenants:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              quota: { $ref: '#/components/schemas/ResourcePair' }
+              requested: { $ref: '#/components/schemas/ResourcePair' }
+              quota_ratio: { type: number }
+              share: { type: number }
+              fair_share: { type: number }
+              health:
+                $ref: '#/components/schemas/HealthScore'
+        incidents:
+          type: object
+          properties:
+            open: { type: integer }
+            critical: { type: integer }
+            warn: { type: integer }
+            info: { type: integer }
 
     # ------------------------------------------------ 容量建议
     CurvePoint:

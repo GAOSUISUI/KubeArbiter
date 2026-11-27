@@ -16,9 +16,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/kubearbiter/kubearbiter/internal/aiops"
 	"github.com/kubearbiter/kubearbiter/internal/api"
 	"github.com/kubearbiter/kubearbiter/internal/decision/capacity"
 	"github.com/kubearbiter/kubearbiter/internal/decision/metrics"
+	"github.com/kubearbiter/kubearbiter/internal/observe"
+	"github.com/kubearbiter/kubearbiter/internal/slo"
 	"github.com/kubearbiter/kubearbiter/internal/store/postgres"
 )
 
@@ -38,15 +41,23 @@ func main() {
 		Policies: store, Decisions: store, Writer: store, Snapshots: store,
 		SLO: store, SLOWriter: store, Idempotency: store,
 		Tasks: store, TaskWriter: store, AuditLogs: store, AuditWriter: store,
+		Incidents: store, IncidentWriter: store,
 	}
+	var incidentStore aiops.Store = store
+	recorder := observe.NewRecorder()
+	deps.Recorder = recorder
 
 	// 有可用 kubeconfig 时才连集群；连不上不阻塞启动，改为在 /healthz 暴露 k8s 依赖不可用。
-	if view, err := startClusterView(ctx); err != nil {
+	if view, usage, err := startClusterView(ctx); err != nil {
 		log.Printf("集群视图未启用: %v", err)
 	} else {
 		deps.Snapshotter = func(context.Context) (capacity.Snapshot, error) {
 			return view.Snapshot(time.Now())
 		}
+		deps.Observer = func(context.Context) (capacity.Diagnostics, error) {
+			return view.Diagnostics(time.Now())
+		}
+		deps.Metrics = usage
 		deps.TenantOfNamespace = view.NamespaceTenant
 		deps.Checks = map[string]func(context.Context) error{
 			"k8s": func(context.Context) error {
@@ -74,6 +85,8 @@ func main() {
 			deps.Idempotency = pg
 			deps.Tasks, deps.TaskWriter = pg, pg
 			deps.AuditLogs, deps.AuditWriter = pg, pg
+			deps.Incidents, deps.IncidentWriter = pg, pg
+			incidentStore = pg
 			if deps.Checks == nil {
 				deps.Checks = map[string]func(context.Context) error{}
 			}
@@ -83,6 +96,32 @@ func main() {
 				return pool.Ping(pingCtx)
 			}
 		}
+	}
+
+	// 平台自身的可用性 SLO：默认自动建定义并采集 /api/v1/ 请求；
+	// ARBITER_SELF_SLO=off 可关闭。
+	if os.Getenv("ARBITER_SELF_SLO") != "off" {
+		ensureSelfSLO(ctx, deps)
+		if sink, ok := deps.SLO.(observe.BucketSink); ok {
+			go recorder.Run(ctx, sink, "arbiter-api")
+		}
+	}
+
+	// 故障检测只读集群，写入事件与诊断；没有集群视图时自然不启动。
+	if deps.Observer != nil && incidentStore != nil {
+		interval := aiops.DefaultInterval
+		if raw := os.Getenv("ARBITER_DETECT_INTERVAL"); raw != "" {
+			if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+				interval = parsed
+			}
+		}
+		source := aiops.SourceFuncs{
+			DiagnosticsFn: deps.Observer,
+			TenantsFn: func(ctx context.Context, diag capacity.Diagnostics) ([]aiops.TenantInput, error) {
+				return api.TenantInputs(ctx, deps.TenantCatalog, diag), nil
+			},
+		}
+		go aiops.NewDetector(incidentStore, source, interval, log.Printf).Run(ctx)
 	}
 
 	router := api.NewRouter(deps)
@@ -130,15 +169,15 @@ func main() {
 
 // startClusterView 按 KUBECONFIG / ~/.kube/config 建立 clientset，并异步启动 informer。
 // 返回的 View 在 ctx 取消后停止。
-func startClusterView(ctx context.Context) (*capacity.View, error) {
+func startClusterView(ctx context.Context) (*capacity.View, *metrics.Store, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	view := capacity.NewView(client, 5*time.Minute)
@@ -152,5 +191,30 @@ func startClusterView(ctx context.Context) (*capacity.View, error) {
 			log.Printf("informer 停止: %v", err)
 		}
 	}()
-	return view, nil
+	return view, usage, nil
+}
+
+// ensureSelfSLO 保证 arbiter-api 自身有一个可用的可用性 SLO；不覆盖已有定义。
+func ensureSelfSLO(ctx context.Context, deps api.Deps) {
+	if deps.SLO == nil || deps.SLOWriter == nil {
+		return
+	}
+	definitions, err := deps.SLO.ListSLODefinitions(ctx)
+	if err != nil {
+		log.Printf("读取 SLO 定义失败，跳过平台自身 SLO: %v", err)
+		return
+	}
+	for _, def := range definitions {
+		if def.Service == "arbiter-api" && def.SLIType == slo.SLIAvailability {
+			return
+		}
+	}
+	if _, err := deps.SLOWriter.CreateSLODefinition(ctx, slo.Definition{
+		Service: "arbiter-api",
+		SLIType: slo.SLIAvailability,
+		Target:  0.995,
+		Window:  time.Hour,
+	}); err != nil {
+		log.Printf("创建平台自身 SLO 失败: %v", err)
+	}
 }
